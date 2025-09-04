@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ChangeListManager">
+    <list default="true" id="ace79391-ebb8-42ea-be28-936c2622ef3f" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/.idea/BOT.iml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/BOT/5_Live_Bot_Dashboard.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/BOT/config_live.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/BOT/connect_ib.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/BOT/ib_client.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/BOT/notification_manager.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/BOT/trade_logger.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/BOT/trader_bot.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="ProjectColorInfo"><![CDATA[{
+  "associatedIndex": 4
+}]]></component>
+  <component name="ProjectId" id="32EBWutoxyf00VgRR7DOGIKpSeI" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "git-widget-placeholder": "master",
+    "last_opened_file_path": "C:/Users/High-net/PycharmProjects/BOT"
+  }
+}]]></component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="C:\Users\High-net\PycharmProjects\BOT" />
+    </key>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-python-sdk-41e8cd69c857-64d779b69b7a-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-251.26927.90" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="ace79391-ebb8-42ea-be28-936c2622ef3f" name="Changes" comment="" />
+      <created>1756975886389</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1756975886389</updated>
+    </task>
+    <servers />
+  </component>
+</project>
