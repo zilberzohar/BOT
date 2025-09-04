@@ -48,7 +48,6 @@ class TradingBot:
             self.ib.reqMktData(self.contract, '', False, False)
             self.ib.reqRealTimeBars(self.contract, 5, 'TRADES', False)
             self.log_and_queue('status', "Subscribed to real-time data. Bot is LIVE.")
-            notification_manager.send_email_alert("H.N Bot Started", f"The bot is live for {self.params['ticker']}.")
 
             while self.ib.isConnected():
                 await self.ib.sleep(2)
@@ -57,7 +56,6 @@ class TradingBot:
         except Exception as e:
             tb_str = traceback.format_exc()
             self.log_and_queue('status', f"❌ CRITICAL ERROR: {e}")
-            notification_manager.send_email_alert("H.N Bot CRITICAL ERROR", f"The bot has crashed.\n\nError:\n{tb_str}")
         finally:
             if self.ib.isConnected(): self.ib.disconnect()
             self.log_and_queue('status', "Disconnected from IBKR.")
@@ -89,14 +87,8 @@ class TradingBot:
                            'entry_price': trade.orderStatus.avgFillPrice}
                 self.active_trade_details = details
                 self.log_and_queue('status', f"✅ TRADE FILLED: {direction} at {details['entry_price']}")
-                subject = f"Trade Executed: {direction} {self.params['ticker']}"
-                body = f"Entered a {direction} trade for {details['quantity']} shares of {self.params['ticker']} at an average price of ${details['entry_price']:.2f}."
-                notification_manager.send_email_alert(subject, body)
             else:  # Exit Fill
                 self.log_and_queue('status', f"🎉 TRADE CLOSED at {trade.orderStatus.avgFillPrice}")
-                subject = f"Trade Closed: {self.params['ticker']}"
-                body = f"The trade for {self.params['ticker']} has been closed at an average price of ${trade.orderStatus.avgFillPrice:.2f}."
-                notification_manager.send_email_alert(subject, body)
                 self.in_position = False;
                 self.active_trade_details = {}
         self.q.put({'type': 'active_trade', 'data': self.active_trade_details})
