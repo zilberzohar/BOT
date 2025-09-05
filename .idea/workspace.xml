@@ -4,7 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ace79391-ebb8-42ea-be28-936c2622ef3f" name="Changes" comment="SPLIT PROJECT TO BOT">
+    <list default="true" id="ace79391-ebb8-42ea-be28-936c2622ef3f" name="Changes" comment="VER1">
+      <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/BOT/5_Live_Bot_Dashboard.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/5_Live_Bot_Dashboard.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/BOT/trader_bot.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/trader_bot.py" afterDir="false" />
@@ -17,21 +18,21 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
-  <component name="GitHubPullRequestSearchHistory"><![CDATA[{
-  "lastFilter": {
-    "state": "OPEN",
-    "assignee": "zilberzohar"
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;zilberzohar&quot;
   }
-}]]></component>
-  <component name="GithubPullRequestsUISettings"><![CDATA[{
-  "selectedUrlAndAccountId": {
-    "url": "https://github.com/zilberzohar/BOT.git",
-    "accountId": "95103c40-ebc3-4ec0-ab22-36096242da33"
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/zilberzohar/BOT.git&quot;,
+    &quot;accountId&quot;: &quot;95103c40-ebc3-4ec0-ab22-36096242da33&quot;
   }
-}]]></component>
-  <component name="ProjectColorInfo"><![CDATA[{
-  "associatedIndex": 4
-}]]></component>
+}</component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 4
+}</component>
   <component name="ProjectId" id="32EBWutoxyf00VgRR7DOGIKpSeI" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
@@ -39,11 +40,14 @@
   </component>
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
+    "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
     "ModuleVcsDetector.initialDetectionPerformed": "true",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager": "true",
     "RunOnceActivity.git.unshallow": "true",
+    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
     "git-widget-placeholder": "master",
+    "ignore.virus.scanning.warn.message": "true",
     "last_opened_file_path": "C:/Users/High-net/PycharmProjects/BOT"
   }
 }]]></component>
@@ -75,11 +79,20 @@
       <option name="project" value="LOCAL‎" />
       <updated>1756976493414</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL‎-00002" summary="VER1">
+      <option name="closed" value="true" />
+      <created>1756984585131</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL‎-00002" />
+      <option name="project" value="LOCAL‎" />
+      <updated>1756984585131</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="SPLIT PROJECT TO BOT" />
-    <option name="LAST_COMMIT_MESSAGE" value="SPLIT PROJECT TO BOT" />
+    <MESSAGE value="VER1" />
+    <option name="LAST_COMMIT_MESSAGE" value="VER1" />
   </component>
 </project>

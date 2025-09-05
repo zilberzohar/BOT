@@ -1,94 +1,88 @@
 # ==============================================================================
-# File: 5_Live_Bot_Dashboard.py (גרסה משודרגת עם תיקון Event Loop ועיצוב)
+# File: 5_Live_Bot_Dashboard.py (Final version implementing expert advice)
 # ==============================================================================
+
+# --- MUST be first lines in the file ---
+import sys
 import asyncio
 
-# --- התיקון לבעיית ה-Event Loop ---
-# הקוד הזה חייב להיות בראש הקובץ, לפני כל import אחר
+# On Windows + Python 3.12, use the selector policy
+if sys.platform.startswith('win'):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# Ensure there's a loop in Streamlit's ScriptRunner thread BEFORE imports that expect one
 try:
-    loop = asyncio.get_running_loop()
-except RuntimeError:  # 'RuntimeError: There is no current event loop...'
+    asyncio.get_running_loop()
+except RuntimeError:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-# ------------------------------------
+# --- end prelude ---
 
+# Now it's safe to import ib_insync/eventkit
+from ib_insync import util
 import streamlit as st
-import pandas as pd
 import queue
 import threading
 import time
 from datetime import datetime
 
-# ייבוא הרכיבים המרכזיים של הבוט
-from trader_bot import TradingBot
-import config_live as config  # נייבא את הגדרות ברירת המחדל
+# Keep the simple (sync) pattern for Streamlit:
+util.startLoop()  # installs a GUI-friendly loop wrapper
 
-# --- הגדרות בסיסיות של העמוד ---
+from trader_bot import TradingBot
+import config_live
+
+# --- Page and Session State Setup ---
 st.set_page_config(layout="wide", page_title="H.N Bot Dashboard")
 
-# --- ניהול מצב האפליקציה (Session State) ---
-if 'bot_thread' not in st.session_state:
-    st.session_state.bot_thread = None
-if 'bot_running' not in st.session_state:
-    st.session_state.bot_running = False
-if 'connection_status' not in st.session_state:
-    st.session_state.connection_status = "Disconnected"
-if 'log_messages' not in st.session_state:
-    st.session_state.log_messages = []
-if 'reasoning' not in st.session_state:
-    st.session_state.reasoning = {}
-if 'orb_levels' not in st.session_state:
-    st.session_state.orb_levels = {}
-if 'active_trade' not in st.session_state:
-    st.session_state.active_trade = {}
-if 'q' not in st.session_state:
-    st.session_state.q = queue.Queue()
+if 'bot_thread' not in st.session_state: st.session_state.bot_thread = None
+if 'bot_running' not in st.session_state: st.session_state.bot_running = False
+if 'connection_status' not in st.session_state: st.session_state.connection_status = "Disconnected"
+if 'log_messages' not in st.session_state: st.session_state.log_messages = []
+if 'reasoning' not in st.session_state: st.session_state.reasoning = {}
+if 'orb_levels' not in st.session_state: st.session_state.orb_levels = {}
+if 'active_trade' not in st.session_state: st.session_state.active_trade = {}
+if 'q' not in st.session_state: st.session_state.q = queue.Queue()
 
 
-# --- פונקציית המטרה של ה-Thread ---
+# --- Bot Thread Function ---
 def run_bot(params, q):
-    loop = None
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
         bot = TradingBot(params=params, q=q)
-        loop.run_until_complete(bot.start())
+        bot.start()
     except Exception as e:
         q.put({'type': 'status', 'data': f"❌ CRITICAL THREAD ERROR: {e}"})
-    finally:
-        if loop:
-            loop.close()
 
 
 # ==============================================================================
-# --- Sidebar (סרגל צד) - מרכז הבקרה של הבוט ---
+# --- Sidebar UI ---
 # ==============================================================================
 with st.sidebar:
     st.image("https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcR_g29n5zlPzVd_pA-Y2oFN5J5sbYITgXW2jA&s", width=100)
     st.header("H.N Bot Controls")
 
     st.subheader("Strategy Parameters")
-    ticker = st.text_input("Ticker", value=config.STRATEGY_TICKER)
+    ticker = st.text_input("Ticker", value=config_live.STRATEGY_TICKER)
     timeframe = st.selectbox("Timeframe", ['1 min', '5 mins', '15 mins', '1 hour', '1 day'], index=1)
-    orb_minutes = st.number_input("ORB Minutes", min_value=1, value=config.STRATEGY_ORB_MINUTES)
-    stop_loss_pct = st.number_input("Stop Loss (%)", min_value=0.1, value=config.STRATEGY_STOP_LOSS_PCT, step=0.1,
+    orb_minutes = st.number_input("ORB Minutes", min_value=1, value=config_live.STRATEGY_ORB_MINUTES)
+    stop_loss_pct = st.number_input("Stop Loss (%)", min_value=0.1, value=config_live.STRATEGY_STOP_LOSS_PCT, step=0.1,
                                     format="%.2f")
-    take_profit_pct = st.number_input("Take Profit (%)", min_value=0.1, value=config.STRATEGY_TAKE_PROFIT_PCT, step=0.1,
-                                      format="%.2f")
+    take_profit_pct = st.number_input("Take Profit (%)", min_value=0.1, value=config_live.STRATEGY_TAKE_PROFIT_PCT,
+                                      step=0.1, format="%.2f")
     trade_direction = st.selectbox("Trade Direction", ['Long & Short', 'Long Only', 'Short Only'],
                                    index=['Long & Short', 'Long Only', 'Short Only'].index(
-                                       config.STRATEGY_TRADE_DIRECTION))
+                                       config_live.STRATEGY_TRADE_DIRECTION))
 
     st.subheader("Filters")
-    use_market_regime_filter = st.checkbox("Use Market Regime Filter", value=config.USE_MARKET_REGIME_FILTER)
-    use_vwap_filter = st.checkbox("Use VWAP Filter", value=config.USE_VWAP_FILTER)
-    use_volume_filter = st.checkbox("Use Volume Filter", value=config.USE_VOLUME_FILTER)
+    use_market_regime_filter = st.checkbox("Use Market Regime Filter", value=config_live.USE_MARKET_REGIME_FILTER)
+    use_vwap_filter = st.checkbox("Use VWAP Filter", value=config_live.USE_VWAP_FILTER)
+    use_volume_filter = st.checkbox("Use Volume Filter", value=config_live.USE_VOLUME_FILTER)
 
     st.divider()
 
     if st.button("Start Bot", type="primary", use_container_width=True, disabled=st.session_state.bot_running):
         params = {
-            'host': config.IBKR_HOST, 'port': config.IBKR_PORT, 'client_id': config.IBKR_CLIENT_ID,
+            'host': config_live.IBKR_HOST, 'port': config_live.IBKR_PORT, 'client_id': config_live.IBKR_CLIENT_ID,
             'ticker': ticker, 'timeframe': timeframe, 'orb_minutes': orb_minutes,
             'stop_loss_pct': stop_loss_pct, 'take_profit_pct': take_profit_pct, 'trade_direction': trade_direction,
             'use_market_regime_filter': use_market_regime_filter, 'use_vwap_filter': use_vwap_filter,
@@ -109,7 +103,7 @@ with st.sidebar:
         st.rerun()
 
 # ==============================================================================
-# --- Main Dashboard (החלק המרכזי של הממשק) ---
+# --- Main Dashboard UI ---
 # ==============================================================================
 st.title("📈 H.N Bot Live Trading Dashboard")
 
@@ -157,7 +151,7 @@ with col_right:
     log_html += "</div>"
     log_placeholder.markdown(log_html, unsafe_allow_html=True)
 
-# --- לולאת עדכון הממשק ---
+# --- UI Update Loop ---
 if st.session_state.bot_running:
     while not st.session_state.q.empty():
         message = st.session_state.q.get_nowait()
