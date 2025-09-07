@@ -4,16 +4,23 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ace79391-ebb8-42ea-be28-936c2622ef3f" name="Changes" comment="VER1">
-      <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
+    <list default="true" id="ace79391-ebb8-42ea-be28-936c2622ef3f" name="Changes" comment="Ver2_fix_deshboard">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/BOT/5_Live_Bot_Dashboard.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/5_Live_Bot_Dashboard.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/BOT/config_live.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/config_live.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/BOT/trader_bot.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/trader_bot.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Python Script" />
+      </list>
+    </option>
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -42,6 +49,7 @@
   "keyToString": {
     "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
     "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.TEST_LIVE_DATA.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager": "true",
     "RunOnceActivity.git.unshallow": "true",
@@ -87,12 +95,21 @@
       <option name="project" value="LOCAL‎" />
       <updated>1756984585131</updated>
     </task>
-    <option name="localTasksCounter" value="3" />
+    <task id="LOCAL‎-00003" summary="Ver2_fix_deshboard">
+      <option name="closed" value="true" />
+      <created>1757072421533</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL‎-00003" />
+      <option name="project" value="LOCAL‎" />
+      <updated>1757072421533</updated>
+    </task>
+    <option name="localTasksCounter" value="4" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="SPLIT PROJECT TO BOT" />
     <MESSAGE value="VER1" />
-    <option name="LAST_COMMIT_MESSAGE" value="VER1" />
+    <MESSAGE value="Ver2_fix_deshboard" />
+    <option name="LAST_COMMIT_MESSAGE" value="Ver2_fix_deshboard" />
   </component>
 </project>
