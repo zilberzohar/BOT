@@ -4,10 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ace79391-ebb8-42ea-be28-936c2622ef3f" name="Changes" comment="Ver2_fix_deshboard">
+    <list default="true" id="ace79391-ebb8-42ea-be28-936c2622ef3f" name="Changes" comment="Ver3_fix_deshboard _with CHAT GPT">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/BOT/5_Live_Bot_Dashboard.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/5_Live_Bot_Dashboard.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/BOT/config_live.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/config_live.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/BOT/trader_bot.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/trader_bot.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -103,13 +101,22 @@
       <option name="project" value="LOCAL‎" />
       <updated>1757072421533</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL‎-00004" summary="Ver3_fix_deshboard _with CHAT GPT">
+      <option name="closed" value="true" />
+      <created>1757256392978</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL‎-00004" />
+      <option name="project" value="LOCAL‎" />
+      <updated>1757256392978</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="SPLIT PROJECT TO BOT" />
     <MESSAGE value="VER1" />
     <MESSAGE value="Ver2_fix_deshboard" />
-    <option name="LAST_COMMIT_MESSAGE" value="Ver2_fix_deshboard" />
+    <MESSAGE value="Ver3_fix_deshboard _with CHAT GPT" />
+    <option name="LAST_COMMIT_MESSAGE" value="Ver3_fix_deshboard _with CHAT GPT" />
   </component>
 </project>

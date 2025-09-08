@@ -16,6 +16,54 @@ class TradingBot:
     We LAZY-IMPORT ib_insync INSIDE start(), after creating an event loop in this thread.
     """
 
+    def publish_diagnostics(self, current_time_dt):
+        import pandas as pd
+        # זמנים בניו-יורק
+        ny_now = pd.Timestamp.utcnow().tz_localize('UTC').tz_convert('America/New_York')
+        ny_bar_time = current_time_dt.tz_localize('UTC').tz_convert('America/New_York')
+
+        market_open = ny_bar_time.replace(hour=9, minute=30, second=0, microsecond=0)
+        orb_end = market_open + datetime.timedelta(minutes=self.params['orb_minutes'])
+        orb_ready = ny_bar_time >= orb_end
+
+        price = float(self.historical_data['close'].iloc[-1]) if not self.historical_data.empty else None
+        vwap = self.historical_data.get('VWAP_D')
+        vwap = float(vwap.iloc[-1]) if vwap is not None and not pd.isna(vwap.iloc[-1]) else None
+        vol = float(self.historical_data['volume'].iloc[-1]) if not self.historical_data.empty else None
+        vsma = self.historical_data.get('VOLUME_SMA_20')
+        vsma = float(vsma.iloc[-1]) if vsma is not None and not pd.isna(vsma.iloc[-1]) else None
+
+        # סטטוס פילטרים לפי מצב אחרון
+        regime_ok = (not self.params.get('use_market_regime_filter', True)) or (
+                    self.market_regime == "UPTREND" or self.market_regime == "DOWNTREND")
+        vwap_ok = (not self.params.get('use_vwap_filter', True)) or (vwap is not None and price is not None)
+        vol_ok = (not self.params.get('use_volume_filter', True)) or (vol is not None and vsma is not None)
+
+        diag = {
+            "ny_now": ny_now.strftime('%Y-%m-%d %H:%M:%S'),
+            "bar_time_ny": ny_bar_time.strftime('%Y-%m-%d %H:%M:%S'),
+            "market_open": market_open.strftime('%H:%M'),
+            "orb_minutes": self.params['orb_minutes'],
+            "orb_end_time": orb_end.strftime('%H:%M'),
+            "orb_ready": orb_ready,
+            "orb_high": round(self.orb_high, 2) if self.orb_high is not None else None,
+            "orb_low": round(self.orb_low, 2) if self.orb_low is not None else None,
+            "last_price": price,
+            "distance_to_long_trigger": (
+                round(self.orb_high - price, 3) if (self.orb_high is not None and price is not None) else None),
+            "distance_to_short_trigger": (
+                round(price - self.orb_low, 3) if (self.orb_low is not None and price is not None) else None),
+            "filters": {
+                "regime_enabled": self.params.get('use_market_regime_filter', True), "regime_ok": regime_ok,
+                "regime_state": self.market_regime,
+                "vwap_enabled": self.params.get('use_vwap_filter', True), "vwap_ok": vwap_ok, "vwap": vwap,
+                "volume_enabled": self.params.get('use_volume_filter', True), "volume_ok": vol_ok, "volume": vol,
+                "volume_sma20": vsma,
+            },
+            "in_position": self.in_position
+        }
+        self.q.put({'type': 'diagnostics', 'data': diag})
+
     def __init__(self, params: dict, q: queue.Queue, stop_event=None):
         self.params = params
         self.q = q
