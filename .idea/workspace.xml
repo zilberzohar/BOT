@@ -5,8 +5,14 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="ace79391-ebb8-42ea-be28-936c2622ef3f" name="Changes" comment="Ver3_fix_deshboard _with CHAT GPT">
+      <change afterPath="$PROJECT_DIR$/BOT/trade_monitor/README_MONITOR.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/BOT/trade_monitor/demo_emit.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/BOT/trade_monitor/export_events.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/BOT/trade_monitor/monitor.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/BOT/trade_monitor/monitor_app.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/BOT/trade_monitor/monitor_settings.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/BOT/trade_monitor/requirements.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/BOT/trader_bot.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/trader_bot.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -61,6 +67,9 @@
     <key name="CopyFile.RECENT_KEYS">
       <recent name="C:\Users\High-net\PycharmProjects\BOT" />
     </key>
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\High-net\PycharmProjects\BOT\BOT\trade_monitor" />
+    </key>
   </component>
   <component name="SharedIndexes">
     <attachedChunks>
@@ -109,7 +118,15 @@
       <option name="project" value="LOCAL‎" />
       <updated>1757256392978</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL‎-00005" summary="Ver3_fix_deshboard _with CHAT GPT">
+      <option name="closed" value="true" />
+      <created>1757328014991</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL‎-00005" />
+      <option name="project" value="LOCAL‎" />
+      <updated>1757328014991</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
