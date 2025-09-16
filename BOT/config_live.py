@@ -5,6 +5,7 @@
 # These values will be loaded into the dashboard but can be changed from the UI.
 
 # --- IBKR Connection Settings ---
+IBKR_CLIENT_ID = 1101
 IBKR_HOST = '127.0.0.1'
 IBKR_PORT = 7497  # 7497 for Paper Trading TWS, 7496 for Live TWS
 IBKR_CLIENT_ID = 1

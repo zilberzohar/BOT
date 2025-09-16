@@ -21,7 +21,7 @@ class IBClient:
                 "time": ticker.time.strftime('%Y-%m-%d %H:%M:%S') if ticker.time else 'N/A'
             }
 
-    def connect(self, host='127.0.0.1', port=7497, clientId=20):
+    def connect(self, host='127.0.0.1', port=7497, clientId=1101):
         """Connects to IB TWS or Gateway."""
         if not self.ib.isConnected():
             try:

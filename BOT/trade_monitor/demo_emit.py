@@ -1,7 +1,7 @@
 # Optional: quick demo emitter to test the dashboard without your bot.
 import random, time
 from monitor import info, warn
-symbols = ["TSLA", "AAPL", "SPY"]
+symbols = ["TSLA", "AAPL", "VIXY"]
 
 i = 0
 while True:
