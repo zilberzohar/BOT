@@ -1,14 +1,15 @@
 # 5_Live_Bot_Dashboard.py
 # ------------------------------------------------------------
-# דשבורד סטרים-ליט:
-# - H.N Bot Controls (UI ישן – Ticker/Timeframe/ORB/TP/SL/Direction + Filters)
-# - תיקון event loop ל-Windows לפני import של ib_insync
-# - חיבור ל-IB + מדדים/טבלאות/יומן
-# - ניסיון לטעון ORB מהריפו (trader_bot/strategies.orb/...) ואם לא – fallback ל-orb_strategy.run_orb_once
-# - רענון אוטומטי (streamlit-autorefresh אם מותקן) + st.rerun() לרענון ידני
+# Live Bot Dashboard (Streamlit)
+# - H.N Bot Controls UI (Ticker/Timeframe/ORB/TP/SL/Direction + Filters)
+# - Windows asyncio loop fix before ib_insync import
+# - Connect IB + metrics/trades/log
+# - Tries to use ORB from repo; otherwise falls back to orb_strategy.run_orb_once
+# - Heartbeat + ORB Levels (High/Low/Last) display
+# - Telegram notifications on entry (optional, via sidebar settings)
 # ------------------------------------------------------------
 
-# ===== יצירת event loop לפני ib_insync =====
+# ===== asyncio event loop BEFORE ib_insync =====
 import sys
 import asyncio
 
@@ -26,17 +27,19 @@ except RuntimeError:
 
 from datetime import datetime, timedelta, timezone, time as dtime
 from typing import List, Dict, Any, Optional
+import os
+import json
 
 import streamlit as st
 
-# ===== אוטו-רענון (אופציונלי) =====
+# ===== optional autorefresh =====
 _HAS_AUTO = True
 try:
     from streamlit_autorefresh import st_autorefresh
 except Exception:
     _HAS_AUTO = False
 
-# ===== ניסיון לטעון ib_insync =====
+# ===== ib_insync =====
 try:
     from ib_insync import IB
     _HAS_IB = True
@@ -50,7 +53,7 @@ except Exception as e:
     st.error("⚠️ שגיאה בזמן טעינת ib_insync:")
     st.exception(e)
 
-# ===== קונפיג =====
+# ===== config =====
 IBKR_HOST = "127.0.0.1"
 IBKR_PORT = 7497         # Paper: 7497, Live: 7496
 IBKR_CLIENT_ID = 1101
@@ -58,7 +61,7 @@ IBKR_CLIENT_ID = 1101
 DEFAULT_REFRESH_SEC = 3
 RECENT_FILL_MINUTES = 2
 
-# ===== עזרי זמן =====
+# ===== time utils =====
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -67,23 +70,20 @@ def fmt_ts(ts: Optional[datetime]) -> str:
         return "—"
     return ts.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
-# ===== טעינת אסטרטגיה מהריפו אם קיימת =====
+# ===== try load ORB entrypoint from repo =====
 from importlib import import_module
 
 def load_orb_entrypoint():
     """
-    מנסה לזהות EntryPoint לאסטרטגיית ORB מהריפו שלך.
-    חיפושים אפשריים:
-      - פונקציה run_orb_once במודולים שונים
-      - מחלקה ORBStrategy עם run_once()
-      - TradingBot עם run_orb_once()/tick()
-    מחזיר (callable, kind) או (None, None).
+    Return (callable, kind) or (None, None).
+    Tries: strategies.orb / trade_monitor.orb / orb_strategy / trader_bot
+    Prefers a function `run_orb_once`.
     """
     candidates = [
         "strategies.orb",
         "trade_monitor.orb",
-        "orb_strategy",     # fallback שלנו (קובץ 2) — בעדיפות אחרונה
-        "trader_bot",       # אם ה-ORB בפנים
+        "trader_bot",
+        "orb_strategy",   # our fallback
     ]
     for mod_name in candidates:
         try:
@@ -91,24 +91,20 @@ def load_orb_entrypoint():
         except Exception:
             continue
 
-        # עדיפות לפונקציה run_orb_once
         fn = getattr(mod, "run_orb_once", None)
         if callable(fn):
-            return fn, "function"
+            return fn, f"{mod_name}.run_orb_once"
 
-        # מחלקה עם run_once
         cls = getattr(mod, "ORBStrategy", None)
         if cls is not None:
-            inst = None
-            # נחזיר עטיפה שמריצה פעם אחת
+            instance = None
             def run_once_wrapper(**kwargs):
-                nonlocal inst
-                if inst is None:
-                    inst = cls(**kwargs)
-                return inst.run_once()
-            return run_once_wrapper, "class"
+                nonlocal instance
+                if instance is None:
+                    instance = cls(**kwargs)
+                return instance.run_once()
+            return run_once_wrapper, f"{mod_name}.ORBStrategy.run_once"
 
-        # TradingBot עם run_orb_once / tick
         bot_cls = getattr(mod, "TradingBot", None)
         if bot_cls is not None:
             bot = None
@@ -116,22 +112,20 @@ def load_orb_entrypoint():
                 nonlocal bot
                 if bot is None:
                     bot = bot_cls(ib=ib)
-                # ננסה run_orb_once אם קיים, אחרת נוותר בג׳נטלמניות
                 cand = getattr(bot, "run_orb_once", None)
                 if callable(cand):
                     return cand(symbol=symbol, qty=qty, tp_pct=tp_pct, sl_pct=sl_pct,
                                 range_minutes=range_minutes, buffer_pct=buffer_pct, cache=cache)
                 cand = getattr(bot, "tick", None)
                 if callable(cand):
-                    return cand()  # ייתכן שמחזיר dict/None
+                    return cand()
                 return {"status": "no_entrypoint_in_tradingbot"}
-            return tb_wrapper, "tradingbot"
-
+            return tb_wrapper, f"{mod_name}.TradingBot"
     return None, None
 
-ORB_ENTRYPOINT, ORB_KIND = load_orb_entrypoint()
+ORB_ENTRYPOINT, ORB_SOURCE = load_orb_entrypoint()
 
-# ===== Cache משאבים =====
+# ===== cache resources =====
 @st.cache_resource(show_spinner=False)
 def get_ib_client():
     if not _HAS_IB:
@@ -146,10 +140,21 @@ def _connect_if_needed(ib: "IB", host: str, port: int, client_id: int) -> bool:
     except Exception:
         return False
 
-# ===== שליפת סטטוס/טריידים מ-IB =====
-def snapshot_trades(ib: "IB") -> List[Dict[str, Any]]:
-    rows = []
-    for t in getattr(ib, "trades", []):
+# ===== robust trades accessor (fixes "'method' object is not iterable") =====
+def _trades_list(ib) -> list:
+    try:
+        tr = getattr(ib, "trades", None)
+        if callable(tr):
+            return tr() or []
+        if isinstance(tr, list):
+            return tr
+    except Exception:
+        pass
+    return []
+
+def snapshot_trades(ib) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for t in _trades_list(ib):
         contract = getattr(t, "contract", None)
         order = getattr(t, "order", None)
         status = getattr(t, "orderStatus", None)
@@ -164,7 +169,7 @@ def snapshot_trades(ib: "IB") -> List[Dict[str, Any]]:
         avg_fill_price = getattr(status, "avgFillPrice", None) if status else None
         status_txt = getattr(status, "status", "—") if status else "—"
 
-        last_fill_time: Optional[datetime] = None
+        last_fill_time = None
         for f in getattr(t, "fills", []):
             f_exec = getattr(f, "execution", None)
             ts = getattr(f_exec, "time", None) if f_exec else None
@@ -182,13 +187,13 @@ def snapshot_trades(ib: "IB") -> List[Dict[str, Any]]:
             "avg_price": avg_fill_price,
             "status": status_txt,
         })
-    rows.sort(key=lambda r: r["time"] or datetime.fromtimestamp(0, tz=timezone.utc), reverse=True)
+    rows.sort(key=lambda r: r["time"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     return rows
 
-def count_open_orders(ib: "IB") -> int:
+def count_open_orders(ib) -> int:
     open_statuses = {"PreSubmitted", "Submitted", "ApiPending", "PendingSubmit", "PendingCancel"}
     n = 0
-    for t in getattr(ib, "trades", []):
+    for t in _trades_list(ib):
         s = getattr(getattr(t, "orderStatus", None), "status", "")
         if s in open_statuses:
             n += 1
@@ -208,6 +213,34 @@ def derive_bot_state(strategy_enabled: bool, open_orders: int, last_fill: Option
     if strategy_enabled:
         return "Waiting for signal"
     return "Idle"
+
+# ===== ORB helpers for display (from fallback module) =====
+try:
+    from orb_strategy import autodetect_contract, _bars_today_1min, compute_opening_range, latest_close  # type: ignore
+    _HAS_ORB_HELPERS = True
+except Exception:
+    _HAS_ORB_HELPERS = False
+
+# ===== Telegram notify =====
+def send_telegram(bot_token: str, chat_id: str, text: str) -> bool:
+    if not bot_token or not chat_id:
+        return False
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    try:
+        try:
+            import requests  # type: ignore
+            r = requests.post(url, json=payload, timeout=5)
+            return r.ok
+        except Exception:
+            # fallback stdlib
+            import urllib.request, urllib.error
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+                return resp.status == 200
+    except Exception:
+        return False
 
 # ===== UI =====
 st.set_page_config(page_title="Live Bot Dashboard", layout="wide")
@@ -238,28 +271,25 @@ with st.sidebar:
 
     st.divider()
 
-    # ---------- H.N Bot Controls (Simple) ----------
+    # ---------- H.N Bot Controls ----------
     st.subheader("H.N Bot Controls")
 
-    # שמירת מצב/ברירות מחדל
     st.session_state.setdefault("strategy_enabled", False)
     st.session_state.setdefault("strategy_config", {
         "symbol": "VIXY",
-        "qty": 100,                    # אם תרצה – אוסיף שדה כמות ב-UI
-        "timeframe": "5 mins",         # "1 min" / "5 mins" / "15 mins"
+        "qty": 100,
+        "timeframe": "5 mins",
         "orb_minutes": 15,
-        "stop_value": 0.50,            # SL (%)
-        "tp_value": 2.00,              # TP (%)
-        "trade_direction": "Long & Short",  # Long & Short / Long Only / Short Only
+        "stop_value": 0.50,
+        "tp_value": 2.00,
+        "trade_direction": "Long & Short",
         "use_regime_filter": False,
         "use_vwap_filter": False,
         "use_volume_filter": False,
-        # מתקדמים (נשארים נסתר): לזיהוי חוזה אוטומטי
         "secType": "STK",
         "exchange": "SMART",
         "currency": "USD",
     })
-
     cfg = st.session_state["strategy_config"]
 
     st.markdown("**Strategy Parameters**")
@@ -309,18 +339,36 @@ with st.sidebar:
         st.session_state["strategy_enabled"] = False
         st.info("הבוט כובה.")
 
-# רענון אוטומטי
+    # ---------- Notifications (Telegram) ----------
+    st.divider()
+    st.subheader("🔔 Notifications")
+    st.session_state.setdefault("tg_enabled", False)
+    st.session_state.setdefault("tg_token", os.getenv("TELEGRAM_BOT_TOKEN", ""))
+    st.session_state.setdefault("tg_chat", os.getenv("TELEGRAM_CHAT_ID", ""))
+
+    tg_enabled = st.toggle("Enable Telegram alerts", value=st.session_state["tg_enabled"])
+    tg_token = st.text_input("Bot Token", value=st.session_state["tg_token"], type="password")
+    tg_chat  = st.text_input("Chat ID",  value=st.session_state["tg_chat"])
+    if st.button("שלח הודעת בדיקה"):
+        ok = send_telegram(tg_token, tg_chat, "✅ Live Bot Dashboard — Test message")
+        st.success("נשלח!") if ok else st.error("נכשל לשלוח (בדוק Token/Chat ID)")
+
+    st.session_state["tg_enabled"] = tg_enabled
+    st.session_state["tg_token"] = tg_token
+    st.session_state["tg_chat"] = tg_chat
+
+# autorefresh
 if auto_refresh and _HAS_AUTO:
     st_autorefresh(interval=int(refresh_every) * 1000, key="auto_refresh_key")
 
-# יצירת IB
+# IB client
 ib = get_ib_client()
 if ib is None:
     st.error("❌ לא ניתן ליצור חיבור IB (ib_insync לא נטען).")
     st.stop()
-st.session_state['ib'] = ib  # שימוש פנימי
+st.session_state['ib'] = ib
 
-# כפתורי חיבור/ניתוק
+# connect/disconnect
 if connect_btn:
     ok = _connect_if_needed(ib, host, int(port), int(client_id))
     if ok:
@@ -369,6 +417,15 @@ with col3:
 with col4:
     st.metric("מילוי אחרון", fmt_ts(last_fill))
 
+# heartbeat indicators
+if "last_strategy_tick" not in st.session_state:
+    st.session_state["last_strategy_tick"] = None
+col5, col6 = st.columns([1, 1])
+with col5:
+    st.metric("Strategy", "ON" if strategy_enabled else "OFF")
+with col6:
+    st.metric("Last Strategy Tick", fmt_ts(st.session_state.get("last_strategy_tick")))
+
 st.divider()
 
 # ---------- LIVE STATE STRIP ----------
@@ -414,12 +471,99 @@ with right:
     st.markdown("---")
     st.subheader("🧩 תצורת אסטרטגיה פעילה")
     cfg_view = st.session_state.get("strategy_config", {})
-    if cfg_view:
-        st.json(cfg_view)
-    else:
-        st.write("לא הוגדרו פרמטרים עדיין.")
+    st.json(cfg_view or {})
+    st.markdown("---")
+    st.subheader("📐 ORB Levels")
+    # נמלא אחרי הרצת האסטרטגיה (למטה) – או נחשב ידנית אם לא קיבלנו מהתוצאה
 
 st.divider()
+
+# ---------- STRATEGY TICK: ORB ----------
+orb_levels = None
+last_price_val = None
+entry_status = None
+
+if ib.isConnected() and strategy_enabled:
+    cfg = st.session_state.get("strategy_config", {})
+    symbol = cfg.get("symbol", "VIXY")
+    qty = int(cfg.get("qty", 100))
+    tp_pct = float(cfg.get("tp_value", 2.0))
+    sl_pct = float(cfg.get("stop_value", 0.5))
+    orb_min = int(cfg.get("orb_minutes", 15))
+
+    result = None
+    try:
+        if ORB_ENTRYPOINT is not None:
+            result = ORB_ENTRYPOINT(
+                ib=ib, symbol=symbol, qty=qty,
+                tp_pct=tp_pct, sl_pct=sl_pct,
+                range_minutes=orb_min,
+                buffer_pct=0.0,
+                cache=st.session_state
+            )
+        else:
+            from orb_strategy import run_orb_once as _fallback
+            result = _fallback(
+                ib=ib, symbol=symbol, qty=qty,
+                tp_pct=tp_pct, sl_pct=sl_pct,
+                range_minutes=orb_min,
+                buffer_pct=0.0,
+                cache=st.session_state
+            )
+        st.session_state["last_strategy_tick"] = datetime.now(timezone.utc)
+    except Exception as e:
+        st.error("שגיאה בהרצת האסטרטגיה:")
+        st.exception(e)
+        result = {"status": "error", "error": str(e)}
+
+    # notifications on entry
+    if isinstance(result, dict):
+        entry_status = result.get("status", "")
+        if st.session_state.get("tg_enabled", False) and entry_status in ("entered_long", "entered_short"):
+            side = "Long" if entry_status.endswith("long") else "Short"
+            rng = result.get("range") or {}
+            hi, lo = rng.get("high"), rng.get("low")
+            last_px = result.get("last")
+            msg = f"✅ ORB Entry: {side}\nSymbol: {symbol}\nLast: {last_px}\nHigh: {hi}\nLow: {lo}\nTP: {tp_pct}% | SL: {sl_pct}%"
+            _ = send_telegram(st.session_state.get("tg_token", ""), st.session_state.get("tg_chat", ""), msg)
+
+        # show ORB widget
+        with st.expander("📐 ORB – מצב נוכחי", expanded=True):
+            st.write(f"Source: {ORB_SOURCE or 'fallback'}")
+            st.json(result)
+
+        # for levels panel
+        rng = result.get("range")
+        if rng:
+            orb_levels = {"high": rng.get("high"), "low": rng.get("low")}
+        last_price_val = result.get("last")
+
+# Fill ORB Levels panel (right column)
+with right:
+    try:
+        if orb_levels is None or last_price_val is None:
+            # compute if not provided (using fallback helpers)
+            if _HAS_ORB_HELPERS and ib.isConnected():
+                symbol = st.session_state["strategy_config"]["symbol"]
+                orb_min = int(st.session_state["strategy_config"]["orb_minutes"])
+                contract = autodetect_contract(ib, symbol)
+                bars = _bars_today_1min(ib, contract)
+                rng = compute_opening_range(bars, orb_min)
+                if rng:
+                    orb_levels = {"high": rng["high"], "low": rng["low"]}
+                last_price_val = latest_close(ib, contract)
+        if orb_levels or last_price_val is not None:
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("ORB High", f"{(orb_levels or {}).get('high', '—')}")
+            with c2:
+                st.metric("Last Price", f"{last_price_val if last_price_val is not None else '—'}")
+            with c3:
+                st.metric("ORB Low", f"{(orb_levels or {}).get('low', '—')}")
+        else:
+            st.write("אין נתוני ORB זמינים עדיין (לפני/סמוך לפתיחה?).")
+    except Exception as e:
+        st.write(f"לא ניתן לחשב ORB Levels: {e}")
 
 # ---------- LOG ----------
 st.subheader("🪵 יומן אירועים")
@@ -434,41 +578,4 @@ if log_lines:
 else:
     st.write("היומן ריק כרגע.")
 
-# ---------- אסטרטגיה: ORB (tick אחד בכל רענון) ----------
-if ib.isConnected() and strategy_enabled:
-    cfg = st.session_state.get("strategy_config", {})
-    symbol = cfg.get("symbol", "VIXY")
-    qty = int(cfg.get("qty", 100))
-    tp_pct = float(cfg.get("tp_value", 2.0))
-    sl_pct = float(cfg.get("stop_value", 0.5))
-    orb_minutes = int(cfg.get("orb_minutes", 15))
-
-    result = None
-    try:
-        if ORB_ENTRYPOINT is not None:
-            # משתמש ב-ORB מהריפו/או fallback ב-orb_strategy
-            result = ORB_ENTRYPOINT(
-                ib=ib, symbol=symbol, qty=qty,
-                tp_pct=tp_pct, sl_pct=sl_pct,
-                range_minutes=orb_minutes,
-                buffer_pct=0.0,
-                cache=st.session_state
-            )
-        else:
-            # ניסיון טעינה מאוחר של fallback אם לא נטען קודם
-            from orb_strategy import run_orb_once as _fallback_orb
-            result = _fallback_orb(
-                ib=ib, symbol=symbol, qty=qty,
-                tp_pct=tp_pct, sl_pct=sl_pct,
-                range_minutes=orb_minutes,
-                buffer_pct=0.0,
-                cache=st.session_state
-            )
-    except Exception as e:
-        st.error("שגיאה בהרצת האסטרטגיה:")
-        st.exception(e)
-
-    with st.expander("📐 ORB – מצב נוכחי", expanded=True):
-        st.json(result or {"status": "no_result"})
-
-st.caption("© Live Bot Dashboard — H.N Bot Controls, ORB, הזמנות פתוחות ומילויים אחרונים.")
+st.caption("© Live Bot Dashboard — H.N Bot Controls, ORB Levels, Heartbeat, Telegram alerts.")
