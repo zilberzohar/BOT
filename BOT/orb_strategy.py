@@ -1,11 +1,8 @@
 # orb_strategy.py
 # ------------------------------------------------------------
-# ORB (Opening Range Breakout) עם:
-# - בניה חיה של הטווח 09:30–09:30+N (NY) + טיימר/התקדמות
-# - מחיר חי (reqTickers) עם fallback להיסטורית 1min
-# - כניסה רק אחרי סגירת חלון ה-ORB (ברירת מחדל) + Catch-Up
-# - החזרת 'phase' ו-'reason' להסבר החלטה
-# - Bracket: הוראת שוק + TP/SL באחוזים
+# ORB (Opening Range Breakout) with pluggable data providers:
+# - OkamiStocks (API) for market data  |  IBKR for order routing
+# - Live ORB build (progress/timer), reasons, optional catch-up
 # ------------------------------------------------------------
 
 from __future__ import annotations
@@ -13,12 +10,97 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional, Dict, Any, List
 
-from ib_insync import IB, Stock, Contract, MarketOrder, LimitOrder, StopOrder, BarData, Ticker
+# IB only for ORDERS (we try not to request market data from IB)
+from ib_insync import IB, Stock, Contract, MarketOrder, LimitOrder, StopOrder, BarData
 
 NY = ZoneInfo("America/New_York")
 
+# ---------------------------- Okami client ----------------------------
+class OkamiClient:
+    BASE = "https://okamistocks.io/api"
 
-# ---------- Contract autodetect ----------
+    def __init__(self, token: str):
+        self.token = (token or "").strip()
+        self._last_ok = False
+        self._last_ts: Optional[str] = None
+
+    def _post_json(self, path: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        data = {"token": self.token, **payload}
+        try:
+            try:
+                import requests  # type: ignore
+                r = requests.post(f"{self.BASE}{path}", json=data, timeout=5)
+                if r.ok:
+                    self._last_ok = True
+                    try:
+                        self._last_ts = r.json().get("timestamp")
+                    except Exception:
+                        pass
+                    return r.json()
+                self._last_ok = False
+                return None
+            except Exception:
+                # stdlib fallback
+                import json as _json
+                import urllib.request
+                req = urllib.request.Request(
+                    f"{self.BASE}{path}",
+                    data=_json.dumps(data).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "Accept": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+                    body = resp.read().decode("utf-8")
+                    import json as _json2
+                    js = _json2.loads(body)
+                    self._last_ok = True
+                    self._last_ts = js.get("timestamp")
+                    return js
+        except Exception:
+            self._last_ok = False
+            return None
+
+    def realtime_mid(self, ticker: str) -> Optional[float]:
+        """
+        /api/quote/real-time returns bid/ask; take mid if available, else any available field.
+        """
+        if not self.token:
+            return None
+        js = self._post_json("/quote/real-time", {"ticker": ticker})
+        if not js:
+            return None
+        bid = js.get("bid_price")
+        ask = js.get("ask_price")
+        if isinstance(bid, (int, float)) and isinstance(ask, (int, float)) and bid == bid and ask == ask:
+            return float((bid + ask) / 2.0)
+        for fld in ("last", "minute_close_price", "bid_price", "ask_price"):
+            v = js.get(fld)
+            if isinstance(v, (int, float)) and v == v:
+                return float(v)
+        return None
+
+    def minute_snapshot(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """
+        /api/quote/minute returns the current minute OHLCV snapshot.
+        NOTE: Okami does NOT return historical minute series—only the *current* minute.
+        """
+        if not self.token:
+            return None
+        js = self._post_json("/quote/minute", {"ticker": ticker})
+        if not js:
+            return None
+        # Normalize field names
+        snap = {
+            "open": js.get("minute_open_price"),
+            "high": js.get("minute_high_price"),
+            "low": js.get("minute_low_price"),
+            "close": js.get("minute_close_price"),
+            "volume": js.get("minute_volume"),
+            "timestamp": js.get("timestamp"),
+        }
+        return snap
+
+
+# ------------------------- IB contract helper -------------------------
 def autodetect_contract(ib: IB, symbol: str) -> Contract:
     symbol = symbol.strip().upper()
     con = Stock(symbol, "SMART", "USD")
@@ -33,33 +115,8 @@ def autodetect_contract(ib: IB, symbol: str) -> Contract:
         return con
 
 
-# ---------- Live price ----------
-def live_price(ib: IB, contract: Contract) -> Optional[float]:
-    """
-    מנסה להביא מחיר חי במהירות; אם אין, חוזר ל-last של היסטוריה.
-    """
-    try:
-        ib.reqMktData(contract, "", False, False)
-        ib.sleep(0.15)  # קצר כדי לא לחסום
-        t: Ticker = ib.ticker(contract)
-        if t is not None:
-            # marketPrice() לעתים מחזיר עדכונים חיים
-            mp = getattr(t, "marketPrice", None)
-            if callable(mp):
-                v = mp()
-                if v and v == v:  # not NaN
-                    return float(v)
-            for fld in ("last", "close", "bid", "ask"):
-                v = getattr(t, fld, None)
-                if v and v == v:
-                    return float(v)
-    except Exception:
-        pass
-    return None
-
-
-# ---------- Data pulls ----------
-def _bars_today_1min(ib: IB, contract: Contract) -> List[BarData]:
+# --------- IB historical bars (used only if hybrid catch-up is enabled) ---------
+def _bars_today_1min_ib(ib: IB, contract: Contract) -> List[BarData]:
     return ib.reqHistoricalData(
         contract,
         endDateTime="",
@@ -71,76 +128,80 @@ def _bars_today_1min(ib: IB, contract: Contract) -> List[BarData]:
     ) or []
 
 
-def _bars_recent_1min(ib: IB, contract: Contract, minutes: int = 45) -> List[BarData]:
-    dur = f"{max(5, int(minutes))} M"
-    return ib.reqHistoricalData(
-        contract,
-        endDateTime="",
-        durationStr=dur,
-        barSizeSetting="1 min",
-        whatToShow="TRADES",
-        useRTH=True,
-        keepUpToDate=False,
-    ) or []
+# ---------------------------- ORB calculators ----------------------------
+def _orb_window_today(range_minutes: int) -> Dict[str, Any]:
+    today = datetime.now(NY).date()
+    start = datetime.combine(today, datetime.min.time(), NY).replace(hour=9, minute=30)
+    end = start + timedelta(minutes=range_minutes)
+    return {"start": start, "end": end}
 
-
-def compute_opening_range_partial(bars: List[BarData], range_minutes: int) -> Optional[Dict[str, Any]]:
-    """
-    מחזיר טווח ORB גם במהלך בניה:
-    {high, low, start, end, complete(bool), elapsed_sec, remaining_sec, progress (0..1)}
-    """
+def _compute_range_from_bars(bars: List[BarData], start: datetime, end: datetime) -> Optional[Dict[str, Any]]:
     if not bars:
         return None
-    today_ny = datetime.now(NY).date()
-    start = datetime.combine(today_ny, datetime.min.time(), NY).replace(hour=9, minute=30)
-    end = start + timedelta(minutes=range_minutes)
-
-    hi = None
-    lo = None
-    now_ny = datetime.now(NY)
+    hi, lo = None, None
     for b in bars:
-        bt = b.date
+        bt = b.date if getattr(b, "date", None) else None
+        if not bt:
+            continue
         if bt.tzinfo is None:
             bt = bt.replace(tzinfo=NY)
         bt_ny = bt.astimezone(NY)
-        if start <= bt_ny < min(now_ny, end):  # עד עכשיו (או עד סוף החלון)
+        if start <= bt_ny < end:
             hi = b.high if hi is None else max(hi, b.high)
             lo = b.low  if lo is None else min(lo, b.low)
-
     if hi is None or lo is None:
-        # עוד לא התחיל החלון (לפני 09:30)
-        complete = now_ny >= end
-        elapsed = max(0, int((min(now_ny, end) - start).total_seconds()))
-        remaining = max(0, int((end - min(now_ny, end)).total_seconds()))
-        progress = 1.0 if complete else (elapsed / max(1, int((end - start).total_seconds())))
-        return {"high": None, "low": None, "start": start, "end": end,
-                "complete": complete, "elapsed_sec": elapsed, "remaining_sec": remaining, "progress": progress}
-
-    complete = datetime.now(NY) >= end
-    elapsed = max(0, int((min(datetime.now(NY), end) - start).total_seconds()))
-    remaining = max(0, int((end - min(datetime.now(NY), end)).total_seconds()))
-    progress = 1.0 if complete else (elapsed / max(1, int((end - start).total_seconds())))
-
-    return {"high": hi, "low": lo, "start": start, "end": end,
-            "complete": complete, "elapsed_sec": elapsed, "remaining_sec": remaining, "progress": progress}
-
-
-def latest_close(ib: IB, contract: Contract) -> Optional[float]:
-    bars = ib.reqHistoricalData(
-        contract,
-        endDateTime="",
-        durationStr="15 M",
-        barSizeSetting="1 min",
-        whatToShow="TRADES",
-        useRTH=True,
-        keepUpToDate=False,
-    )
-    if not bars:
         return None
-    return float(bars[-1].close)
+    return {"high": float(hi), "low": float(lo), "start": start, "end": end}
+
+def _partial_orb_build_with_okami(cache: Dict[str, Any], ok: OkamiClient, symbol: str, range_minutes: int) -> Dict[str, Any]:
+    """
+    Builds ORB high/low incrementally using Okami minute snapshots from the moment the bot is running.
+    If the bot started after 09:30, minutes לפני־כן לא ישוחזרו (אלא אם נעשה hybrid catch-up).
+    """
+    win = _orb_window_today(range_minutes)
+    start, end = win["start"], win["end"]
+    now = datetime.now(NY)
+
+    key = f"okami_orb_{symbol}_{start.date().isoformat()}_{range_minutes}"
+    state = cache.get(key, {"high": None, "low": None, "built_from_okami": True})
+
+    # אם עוד לא התחיל חלון ה-ORB
+    if now < start:
+        total = int((end - start).total_seconds())
+        remaining = int((end - now).total_seconds())
+        progress = max(0.0, min(1.0, (total - remaining) / max(1, total)))
+        rng = {**win, "high": None, "low": None, "complete": False, "elapsed_sec": total - remaining,
+               "remaining_sec": remaining, "progress": progress}
+        return rng
+
+    # אם כבר הסתיים – נחזיר מה שבנוי
+    if now >= end:
+        total = int((end - start).total_seconds())
+        rng = {**win, "high": state["high"], "low": state["low"],
+               "complete": True, "elapsed_sec": total, "remaining_sec": 0, "progress": 1.0}
+        cache[key] = state
+        return rng
+
+    # בתוך חלון – נעדכן מדקה נוכחית
+    snap = ok.minute_snapshot(symbol)
+    if snap and isinstance(snap.get("high"), (int, float)) and isinstance(snap.get("low"), (int, float)):
+        hi = float(snap["high"])
+        lo = float(snap["low"])
+        state["high"] = hi if state["high"] is None else max(state["high"], hi)
+        state["low"]  = lo if state["low"]  is None else min(state["low"],  lo)
+        cache[key] = state
+
+    total = int((end - start).total_seconds())
+    elapsed = int((min(now, end) - start).total_seconds())
+    remaining = max(0, total - elapsed)
+    progress = elapsed / max(1, total)
+
+    rng = {**win, "high": state["high"], "low": state["low"],
+           "complete": False, "elapsed_sec": elapsed, "remaining_sec": remaining, "progress": progress}
+    return rng
 
 
-# ---------- State checks ----------
+# ---------------------------- Orders (IB) ----------------------------
 def has_open_position(ib: IB, contract: Contract) -> int:
     try:
         for p in ib.positions():
@@ -149,7 +210,6 @@ def has_open_position(ib: IB, contract: Contract) -> int:
     except Exception:
         pass
     return 0
-
 
 def open_orders_count(ib: IB, contract: Contract) -> int:
     c = 0
@@ -163,8 +223,6 @@ def open_orders_count(ib: IB, contract: Contract) -> int:
         pass
     return c
 
-
-# ---------- Orders ----------
 def place_bracket_market(
     ib: IB,
     contract: Contract,
@@ -210,25 +268,7 @@ def place_bracket_market(
     }
 
 
-# ---------- Catch-up helper ----------
-def _first_breakout_after_end(bars: List[BarData], rng: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    if not bars or not rng:
-        return None
-    high = rng["high"]; low = rng["low"]; end = rng["end"]
-    for b in bars:
-        bt = b.date
-        if bt.tzinfo is None:
-            bt = bt.replace(tzinfo=NY)
-        bt_ny = bt.astimezone(NY)
-        if bt_ny >= end:
-            if b.close > high:
-                return {"side": "BUY", "time": bt_ny, "close": float(b.close)}
-            if b.close < low:
-                return {"side": "SELL", "time": bt_ny, "close": float(b.close)}
-    return None
-
-
-# ---------- Main tick ----------
+# ---------------------------- Main tick ----------------------------
 def run_orb_once(
     ib: IB,
     symbol: str,
@@ -238,123 +278,211 @@ def run_orb_once(
     range_minutes: int = 5,
     buffer_pct: float = 0.0,
     cache: Optional[Dict[str, Any]] = None,
-    enter_only_after_close: bool = True,
+    # data source
+    data_source: str = "okami",          # "okami" | "ib"
+    okami_token: Optional[str] = None,
+    # optional hybrid (single-shot) catch-up using IB bars
+    hybrid_fill_with_ib: bool = False,
+    # late-entry window (if missed breakout and price still outside range)
     enter_on_late_breakout: bool = True,
     late_window_minutes: int = 30,
 ) -> Dict[str, Any]:
     """
-    מחזיר מידע מלא ל-UI + מבצע הוראה כשיש סיגנל.
-    שדות עיקריים בתוצאה:
-      - phase: "pre", "building", "ready" (נגמר ה-ORB), "post"
-      - range: {high, low, start, end, complete, elapsed_sec, remaining_sec, progress}
-      - last: מחיר חי (אם זמין) או אחרון היסטורי
-      - status: entered_long / entered_short / waiting_for_breakout / already_in_position_or_open_orders / ...
-      - reason: טקסט הסבר קצר
+    Returns dict for UI and places orders via IB when signal occurs.
+    Keys: phase, range{...}, last, status, reason, provider{...}
     """
     if cache is None:
         cache = {}
 
     contract = autodetect_contract(ib, symbol)
-
-    # טווח היום (גם חלקי)
-    bars_today = _bars_today_1min(ib, contract)
-    rng = compute_opening_range_partial(bars_today, range_minutes)
-    if rng is None:
-        return {"status": "waiting_premarket_or_no_data", "symbol": symbol, "phase": "pre", "reason": "אין נתוני 1-דקה עדיין."}
-
+    win = _orb_window_today(range_minutes)
+    start, end = win["start"], win["end"]
     now_ny = datetime.now(NY)
-    phase = "pre" if now_ny < rng["start"] else ("building" if not rng["complete"] else "ready")
 
-    # מחיר חי
-    last = live_price(ib, contract)
-    if last is None:
-        last = latest_close(ib, contract)
+    # --------- data provider selection ---------
+    provider_info = {"source": data_source}
+    last_price: Optional[float] = None
+    rng: Optional[Dict[str, Any]] = None
 
-    # בזמן בניית הטווח – רק מציגים התקדמות
-    if phase == "building":
-        hi = rng["high"]; lo = rng["low"]
+    if data_source == "okami":
+        ok = OkamiClient(okami_token or "")
+        # build ORB incrementally via Okami minute
+        rng = _partial_orb_build_with_okami(cache, ok, symbol, range_minutes)
+
+        # price: prefer realtime mid; fallback to minute close
+        last_price = ok.realtime_mid(symbol)
+        if last_price is None:
+            snap = ok.minute_snapshot(symbol)
+            if snap and isinstance(snap.get("close"), (int, float)):
+                last_price = float(snap["close"])
+
+        provider_info["ok"] = ok._last_ok
+        provider_info["last_api_ts"] = ok._last_ts
+
+        # hybrid catch-up: one-time IB bars to fill missing early minutes if we started late
+        if hybrid_fill_with_ib and rng and not rng.get("complete", False):
+            # אם התחלת אחרי 09:30 ויש לנו חוסר HL, ננסה למלא מה־IB לקריאה אחת
+            if (now_ny > start) and (rng.get("high") is None or rng.get("low") is None) and ib.isConnected():
+                bars = _bars_today_1min_ib(ib, contract)
+                from_ib = _compute_range_from_bars(bars, start, min(now_ny, end))
+                if from_ib:
+                    # הזרקה למצב שנבנה מאוקאמי
+                    rng["high"] = from_ib["high"] if rng["high"] is None else max(rng["high"], from_ib["high"])
+                    rng["low"]  = from_ib["low"]  if rng["low"]  is None else min(rng["low"],  from_ib["low"])
+
+    else:  # "ib" as data source (legacy)
+        bars = _bars_today_1min_ib(ib, contract)
+        rng = _compute_range_from_bars(bars, start, min(now_ny, end))
+        # last price approx from last bar (no streaming)
+        if bars:
+            last_price = float(bars[-1].close)  # last 1min close
+        provider_info["ok"] = ib.isConnected()
+
+    # --------- phases ---------
+    if now_ny < start:
+        phase = "pre"
+    elif now_ny < end:
+        phase = "building"
+    else:
+        phase = "post"
+
+    if rng is None:
         return {
-            "status": "building_range",
-            "phase": phase,
+            "status": "waiting_premarket_or_no_data",
+            "phase": "pre",
             "symbol": symbol,
-            "range": rng,
-            "last": last,
-            "reason": f"בונה טווח פתיחה ({range_minutes} ד׳): High={hi if hi is not None else '—'}, Low={lo if lo is not None else '—'}, נותר {rng['remaining_sec']} שנ׳."
+            "range": {"start": start, "end": end, "high": None, "low": None, "complete": now_ny >= end},
+            "last": last_price,
+            "provider": provider_info,
+            "reason": "אין נתוני דקה/היסטוריה זמינים מהמprovider שנבחר.",
         }
 
-    # אם נגמר החלון – יש לנו גבולות סופיים
-    high = rng["high"]; low = rng["low"]
-    if high is None or low is None:
-        return {"status": "no_orb_range", "phase": phase, "symbol": symbol, "range": rng, "last": last,
-                "reason": "הטווח לא חושב (חוסר בנתונים)."}
+    # complete flag if past end
+    if now_ny >= end:
+        rng["complete"] = True
+        rng["remaining_sec"] = 0
+        rng["progress"] = 1.0
 
-    # בדיקת מצב קיים
+    # --------- already in position / open orders ---------
     pos = has_open_position(ib, contract)
     oo = open_orders_count(ib, contract)
     if pos != 0 or oo > 0:
         return {
             "status": "already_in_position_or_open_orders",
-            "phase": "post",
+            "phase": "post" if now_ny >= end else "building",
             "symbol": symbol,
             "position": pos,
             "open_orders": oo,
             "range": rng,
-            "last": last,
-            "reason": "כבר קיימת פוזיציה/הזמנות פתוחות."
+            "last": last_price,
+            "provider": provider_info,
+            "reason": "כבר קיימת פוזיציה/הזמנות פתוחות.",
         }
 
-    # אם הוגדר להיכנס רק אחרי סגירת החלון — זה המצב כבר (phase ready)
-    # החלטת סיגנל בזמן אמת
+    high = rng.get("high")
+    low  = rng.get("low")
+    if high is None or low is None:
+        # still building without enough info
+        return {
+            "status": "building_range",
+            "phase": "building",
+            "symbol": symbol,
+            "range": rng,
+            "last": last_price,
+            "provider": provider_info,
+            "reason": f"בונה טווח פתיחה ({range_minutes} ד׳). ייתכן שחסרות דקות מוקדמות (Okami לא מספק היסטוריית דקה).",
+        }
+
+    # --------- breakout logic ---------
     hi_buf = high * (1 + buffer_pct / 100.0)
-    lo_buf =  low * (1 - buffer_pct / 100.0)
+    lo_buf = low  * (1 - buffer_pct / 100.0)
 
-    # פריצה חיה
-    if last is not None and last > hi_buf:
-        placed = place_bracket_market(ib, contract, "BUY", qty, tp_pct, sl_pct, float(last))
-        return {"status": "entered_long", "phase": "post", "symbol": symbol, "range": rng, "last": last,
-                "reason": f"פריצת HIGH: last({last}) > {round(hi_buf, 4)}. נפתחה עסקת LONG.",
-                **placed}
-    if last is not None and last < lo_buf:
-        placed = place_bracket_market(ib, contract, "SELL", qty, tp_pct, sl_pct, float(last))
-        return {"status": "entered_short", "phase": "post", "symbol": symbol, "range": rng, "last": last,
-                "reason": f"שבירת LOW: last({last}) < {round(lo_buf, 4)}. נפתחה עסקת SHORT.",
-                **placed}
+    if last_price is not None and last_price > hi_buf:
+        placed = place_bracket_market(ib, contract, "BUY", qty, tp_pct, sl_pct, float(last_price))
+        return {
+            "status": "entered_long",
+            "phase": "post",
+            "symbol": symbol,
+            "range": rng,
+            "last": last_price,
+            "provider": provider_info,
+            "reason": f"פריצת HIGH: last({last_price}) > {round(hi_buf, 4)}. נפתחה עסקת LONG.",
+            **placed
+        }
+    if last_price is not None and last_price < lo_buf:
+        placed = place_bracket_market(ib, contract, "SELL", qty, tp_pct, sl_pct, float(last_price))
+        return {
+            "status": "entered_short",
+            "phase": "post",
+            "symbol": symbol,
+            "range": rng,
+            "last": last_price,
+            "provider": provider_info,
+            "reason": f"שבירת LOW: last({last_price}) < {round(lo_buf, 4)}. נפתחה עסקת SHORT.",
+            **placed
+        }
 
-    # Catch-Up: אם כבר הייתה פריצה מוקדמת והבוט הופעל עכשיו
-    if enter_on_late_breakout and now_ny >= rng["end"]:
-        first_bo = _first_breakout_after_end(bars_today, rng)
-        if first_bo:
-            too_old = (now_ny - first_bo["time"]) > timedelta(minutes=late_window_minutes)
-            still_outside = (last > hi_buf) if first_bo["side"] == "BUY" else (last < lo_buf)
-            if not too_old and still_outside:
-                placed = place_bracket_market(ib, contract, first_bo["side"], qty, tp_pct, sl_pct, float(last))
-                label = "entered_long_late" if first_bo["side"] == "BUY" else "entered_short_late"
-                return {"status": label, "phase": "post", "symbol": symbol, "range": rng, "last": last,
-                        "reason": f"כניסת Catch-Up: הייתה פריצה {first_bo['side']} ב-{first_bo['time'].strftime('%H:%M')} והמחיר עדיין מחוץ לטווח.",
-                        "first_breakout": first_bo, **placed}
+    # --------- late-entry (catch-up) ---------
+    if enter_on_late_breakout and now_ny >= end and last_price is not None:
+        # אין לנו היסטוריית דקה מאוקאמי, לכן late-entry אמין רק אם עדיין מחוץ לטווח כרגע
+        if last_price > hi_buf:
+            placed = place_bracket_market(ib, contract, "BUY", qty, tp_pct, sl_pct, float(last_price))
+            return {
+                "status": "entered_long_late",
+                "phase": "post",
+                "symbol": symbol,
+                "range": rng,
+                "last": last_price,
+                "provider": provider_info,
+                "reason": "כניסה מאוחרת: המחיר עדיין מעל HIGH.",
+                **placed
+            }
+        if last_price < lo_buf:
+            placed = place_bracket_market(ib, contract, "SELL", qty, tp_pct, sl_pct, float(last_price))
+            return {
+                "status": "entered_short_late",
+                "phase": "post",
+                "symbol": symbol,
+                "range": rng,
+                "last": last_price,
+                "provider": provider_info,
+                "reason": "כניסה מאוחרת: המחיר עדיין מתחת ל-LOW.",
+                **placed
+            }
 
-    # ללא כניסה
+    # --------- no signal ---------
     explain = []
-    if last is not None:
-        explain.append(f"last={last}")
-        explain.append(f"H={round(hi_buf,4)} / L={round(lo_buf,4)}")
-        if last <= hi_buf and last >= lo_buf:
+    if last_price is not None:
+        explain += [f"last={last_price}", f"H={round(hi_buf,4)} / L={round(lo_buf,4)}"]
+        if lo_buf <= last_price <= hi_buf:
             explain.append("המחיר בתוך הטווח – אין סיגנל.")
-        elif last <= hi_buf:
+        elif last_price <= hi_buf:
             explain.append("לא עבר את ה-HIGH.")
-        elif last >= lo_buf:
+        elif last_price >= lo_buf:
             explain.append("לא ירד מתחת ל-LOW.")
+
     return {
         "status": "waiting_for_breakout",
-        "phase": "post",
+        "phase": "post" if now_ny >= end else "building",
         "symbol": symbol,
         "range": rng,
-        "last": last,
+        "last": last_price,
+        "provider": provider_info,
         "reason": " | ".join(explain) if explain else "מחכה לסיגנל.",
     }
 
 
-# כלי עזר לשרטוט/דשבורד
+# ------------- helper for chart (if you still want a chart) -------------
 def recent_bars_for_chart(ib: IB, symbol: str, minutes: int = 45) -> List[BarData]:
-    con = autodetect_contract(ib, symbol)
-    return _bars_recent_1min(ib, con, minutes=minutes)
+    """
+    לגרף מהיר—נשתמש ב-IB היסטורי (אם מחוברים). אחרת החזר ריק.
+    (Okami לא מספק היסטוריית דקה מלאה כרגע.)
+    """
+    try:
+        con = autodetect_contract(ib, symbol)
+        return ib.reqHistoricalData(
+            con, endDateTime="", durationStr=f"{max(5, int(minutes))} M",
+            barSizeSetting="1 min", whatToShow="TRADES", useRTH=True, keepUpToDate=False
+        ) or []
+    except Exception:
+        return []

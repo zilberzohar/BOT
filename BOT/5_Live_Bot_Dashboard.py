@@ -1,17 +1,25 @@
+# -*- coding: utf-8 -*-
 # 5_Live_Bot_Dashboard.py
 # ------------------------------------------------------------
-# Live Bot Dashboard (Streamlit) – שקיפות מלאה:
-# - מחיר חי, בניית ORB בזמן אמת (High/Low מתעדכנים), טיימר/התקדמות
-# - בתום חלון: גבולות סופיים והסבר החלטה (reason)
-# - גרף 1min קצר
-# - טלגרם (אופציונלי), דופק ריצה, לוג טריידים
+# Live Bot Dashboard with:
+# - Data-source switch (OkamiStocks | IB) for *data*
+# - IBKR for *orders only*
+# - ORB live build, progress, reasons, Telegram, trades log
+# - NEW: "בדיקת Okami" (price) + "בדיקת TWS" (round-trip 1 share VIXY)
 # ------------------------------------------------------------
 
-import sys, asyncio, os, json
+import sys, asyncio, os, json, warnings
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
 import streamlit as st
+
+# Hide pandas_ta deprecation noise if present
+warnings.filterwarnings(
+    "ignore",
+    message=r".*pkg_resources is deprecated.*",
+    category=UserWarning
+)
 
 # ---- asyncio fix (Windows) ----
 try:
@@ -31,7 +39,7 @@ try:
 except Exception:
     _HAS_AUTO = False
 
-# ---- altair chart (optional) ----
+# ---- optional chart ----
 _HAS_ALTAIR = True
 try:
     import pandas as pd
@@ -39,9 +47,9 @@ try:
 except Exception:
     _HAS_ALTAIR = False
 
-# ---- ib_insync ----
+# ---- ib_insync (for orders) ----
 try:
-    from ib_insync import IB
+    from ib_insync import IB, Stock, MarketOrder
     _HAS_IB = True
 except ImportError:
     IB = None
@@ -55,8 +63,13 @@ except Exception as e:
 
 from importlib import import_module
 
-# ---- load ORB entrypoint (prefers repo, fallback orb_strategy) ----
+# ---- load ORB entrypoint + Okami client helpers from orb_strategy (fallback safe) ----
+OkamiClient = None
+recent_bars_for_chart = None
+autodetect_contract = None
+
 def load_orb_entrypoint():
+    global OkamiClient, recent_bars_for_chart, autodetect_contract
     for mod_name in ["strategies.orb", "trade_monitor.orb", "trader_bot", "orb_strategy"]:
         try:
             mod = import_module(mod_name)
@@ -64,6 +77,10 @@ def load_orb_entrypoint():
             continue
         fn = getattr(mod, "run_orb_once", None)
         if callable(fn):
+            # optional helpers
+            OkamiClient = getattr(mod, "OkamiClient", OkamiClient)
+            recent_bars_for_chart = getattr(mod, "recent_bars_for_chart", recent_bars_for_chart)
+            autodetect_contract = getattr(mod, "autodetect_contract", autodetect_contract)
             return fn, mod_name + ".run_orb_once"
     return None, None
 
@@ -76,12 +93,12 @@ def get_ib_client():
         return None
     return IB()
 
-# ---- util ----
+# ---- utils ----
 def now_utc(): return datetime.now(timezone.utc)
 def fmt_ts(ts: Optional[datetime]) -> str:
     return "—" if not ts else ts.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
-# ---- trades access (robust for trades() vs trades) ----
+# ---- trades access (robust) ----
 def _trades_list(ib) -> list:
     try:
         tr = getattr(ib, "trades", None)
@@ -160,25 +177,55 @@ if not _HAS_IB: st.stop()
 # ---------- SIDEBAR ----------
 with st.sidebar:
     st.header("🔌 חיבור וסטטוס")
-    refresh_every = st.number_input("קצב רענון (שניות)", 1, 30, 3)
-    auto_refresh = st.toggle("רענון אוטומטי", value=True)
+    refresh_every = st.number_input("קצב רענון (שניות)", 1, 30, 2)
+    auto_refresh = st.toggle("רענון אוטומטי", value=True,
+                             help='ב־Okami Std מותר כ־60 קריאות בדקה. השאר ≥ 1 שנ׳.')
     if auto_refresh and not _HAS_AUTO:
         st.info("כדי לאפשר רענון אוטומטי התקן: `pip install streamlit-autorefresh`")
     st.divider()
 
-    st.subheader("💼 חיבור ל־IB")
+    st.subheader("💼 חיבור ל־IB (הוראות בלבד)")
     host = st.text_input("Host", value="127.0.0.1")
     port = st.number_input("Port", value=7497, step=1)
     client_id = st.number_input("Client ID", value=1101, step=1)
     connect_btn = st.button("התחבר / בדוק חיבור")
     disconnect_btn = st.button("נתק")
     manual_refresh_btn = st.button("🔄 רענן עכשיו")
-    st.divider()
+    st.caption("הדשבורד נמנע ממשיכת דאטה דרך IB כדי לא לנתק DATA באפליקציה.")
 
+    # NEW: TWS test button
+    test_tws_btn = st.button("🧪 בדיקת TWS (Round-Trip VIXY 1)")
+
+    st.divider()
+    st.subheader("📡 Data Source")
+    st.session_state.setdefault("data_source", "okami")
+    data_source = st.radio(
+        "בחר מקור דאטה",
+        ["okami", "ib"],
+        index=0,
+        help='okami – דאטה דרך OkamiStocks API. ib – דאטה דרך IB (בדרך כלל אין צורך).'
+    )
+    st.session_state["data_source"] = data_source
+
+    st.session_state.setdefault("okami_token", "")
+    okami_token = st.text_input("Okami API Key", value=st.session_state["okami_token"], type="password")
+    st.session_state["okami_token"] = okami_token
+    st.info("Okami endpoints: real-time & minute snapshot. ללא היסטוריית דקה מלאה.")
+
+    # NEW: Okami test button
+    test_okami_btn = st.button("🧪 בדיקת Okami (שער נוכחי)")
+
+    hybrid = st.toggle(
+        "Hybrid one-time catch-up via IB",
+        value=False,
+        help="חד־פעמי להשלים דקות חסרות בתחילת היום (דורש היסטוריית IB)."
+    ) if data_source == "okami" else False
+
+    st.divider()
     st.subheader("H.N Bot Controls")
     st.session_state.setdefault("strategy_enabled", False)
     st.session_state.setdefault("strategy_config", {
-        "symbol": "VIXY", "qty": 100, "timeframe": "5 mins",
+        "symbol": "VIXY", "qty": 100, "timeframe": "1 min",
         "orb_minutes": 5, "stop_value": 0.50, "tp_value": 2.00,
         "trade_direction": "Long & Short",
         "use_regime_filter": False, "use_vwap_filter": False, "use_volume_filter": False,
@@ -187,7 +234,7 @@ with st.sidebar:
     })
     cfg = st.session_state["strategy_config"]
     ticker = st.text_input("Ticker", value=cfg.get("symbol", "VIXY"))
-    timeframe = st.selectbox("Timeframe", ["1 min", "5 mins", "15 mins"], index=1)
+    timeframe = st.selectbox("Timeframe", ["1 min", "5 mins", "15 mins"], index=0)
     orb_minutes = st.number_input("ORB Minutes", 1, 60, int(cfg.get("orb_minutes", 5)), 1)
     sl_pct = st.number_input("Stop Loss (%)", 0.0, 100.0, float(cfg.get("stop_value", 0.50)), 0.1, format="%.2f")
     tp_pct = st.number_input("Take Profit (%)", 0.0, 100.0, float(cfg.get("tp_value", 2.00)), 0.1, format="%.2f")
@@ -197,10 +244,6 @@ with st.sidebar:
     use_regime = st.checkbox("Use Market Regime Filter", value=bool(cfg.get("use_regime_filter", False)))
     use_vwap   = st.checkbox("Use VWAP Filter",         value=bool(cfg.get("use_vwap_filter", False)))
     use_vol    = st.checkbox("Use Volume Filter",       value=bool(cfg.get("use_volume_filter", False)))
-
-    st.markdown("---")
-    catchup_on = st.checkbox("Enter on past breakout (Catch-Up)", value=bool(cfg.get("catchup", True)))
-    catchup_win = st.number_input("Catch-Up Window (mins)", 1, 180, int(cfg.get("catchup_window", 30)), 1)
 
     st.markdown("---")
     c1, c2, c3 = st.columns(3)
@@ -213,7 +256,6 @@ with st.sidebar:
             "symbol": ticker.strip().upper(), "timeframe": timeframe, "orb_minutes": int(orb_minutes),
             "stop_value": float(sl_pct), "tp_value": float(tp_pct), "trade_direction": trade_dir,
             "use_regime_filter": bool(use_regime), "use_vwap_filter": bool(use_vwap), "use_volume_filter": bool(use_vol),
-            "catchup": bool(catchup_on), "catchup_window": int(catchup_win)
         })
         st.session_state["strategy_config"] = cfg
         st.success("ההגדרות נשמרו.")
@@ -239,14 +281,17 @@ with st.sidebar:
 if auto_refresh and _HAS_AUTO:
     st_autorefresh(interval=int(refresh_every) * 1000, key="auto_refresh_key")
 
-# IB connect/disconnect
+# IB connect/disconnect (orders only)
 ib = get_ib_client()
 if ib is None: st.error("❌ לא ניתן ליצור חיבור IB."); st.stop()
 if connect_btn:
     try:
         if not ib.isConnected():
             ib.connect(host, int(port), clientId=int(client_id), readonly=False, timeout=5)
-        st.sidebar.success(f"מחובר ל־IB ({host}:{port}, clientId={client_id})") if ib.isConnected() else st.sidebar.error("נכשל להתחבר.")
+        if ib.isConnected():
+            st.sidebar.success(f"מחובר ל־IB ({host}:{port}, clientId={client_id})")
+        else:
+            st.sidebar.error("נכשל להתחבר.")
     except Exception as e:
         st.sidebar.error(f"שגיאת חיבור: {e}")
 if disconnect_btn:
@@ -257,15 +302,115 @@ if disconnect_btn:
         st.sidebar.error(f"שגיאת ניתוק: {e}")
 if manual_refresh_btn: st.rerun()
 
+# ---------- NEW: Okami test action ----------
+def run_okami_test(symbol: str, token: str):
+    """
+    Fetch a live price from Okami and show in sidebar.
+    """
+    try:
+        # Prefer using OkamiClient from orb_strategy if available
+        if OkamiClient is not None:
+            oc = OkamiClient(token)
+            price = oc.realtime_mid(symbol)
+            if price is None:
+                snap = oc.minute_snapshot(symbol)
+                price = float(snap["close"]) if snap and isinstance(snap.get("close"), (int, float)) else None
+            if price is not None:
+                st.sidebar.success(f"Okami OK — {symbol} price: {price}")
+            else:
+                st.sidebar.warning("Okami מחובר אבל לא הוחזר מחיר. בדוק API Key/סימול/הודעות מערכת.")
+            return
+        # Fallback minimal request if class missing
+        try:
+            import requests  # type: ignore
+            r = requests.post(
+                "https://okamistocks.io/api/quote/real-time",
+                json={"token": token, "ticker": symbol},
+                timeout=5
+            )
+            if r.ok:
+                js = r.json()
+                bid, ask = js.get("bid_price"), js.get("ask_price")
+                price = None
+                if isinstance(bid, (int, float)) and isinstance(ask, (int, float)):
+                    price = (bid + ask) / 2.0
+                else:
+                    for fld in ("last", "minute_close_price", "bid_price", "ask_price"):
+                        v = js.get(fld)
+                        if isinstance(v, (int, float)): price = float(v); break
+                if price is not None:
+                    st.sidebar.success(f"Okami OK — {symbol} price: {price}")
+                else:
+                    st.sidebar.warning("Okami OK אך לא זוהה שדה מחיר.")
+            else:
+                st.sidebar.error(f"Okami כשל (HTTP {r.status_code})")
+        except Exception as e:
+            st.sidebar.error(f"שגיאת Okami: {e}")
+    except Exception as e:
+        st.sidebar.error(f"שגיאת Okami: {e}")
+
+if test_okami_btn:
+    if not okami_token:
+        st.sidebar.error("נא להזין Okami API Key.")
+    else:
+        run_okami_test(ticker.strip().upper(), okami_token.strip())
+
+# ---------- NEW: TWS round-trip test ----------
+def run_tws_round_trip(ib: IB, symbol: str = "VIXY", qty: int = 1, timeout_s: int = 30):
+    """
+    Market BUY qty, wait fill, then Market SELL qty. Returns (ok, details).
+    """
+    try:
+        if not ib.isConnected():
+            return False, "IB לא מחובר."
+        # Build contract (fallback simple)
+        if autodetect_contract:
+            con = autodetect_contract(ib, symbol)
+        else:
+            con = Stock(symbol, "SMART", "USD")
+
+        buy = MarketOrder("BUY", qty)
+        t_buy = ib.placeOrder(con, buy)
+        # wait fill
+        end = now_utc() + timedelta(seconds=timeout_s)
+        while (now_utc() < end) and (getattr(t_buy.orderStatus, "filled", 0) < qty):
+            ib.sleep(0.3)
+
+        if getattr(t_buy.orderStatus, "filled", 0) < qty:
+            return False, "קניה לא מולאה בזמן שהוגדר."
+
+        sell = MarketOrder("SELL", qty)
+        t_sell = ib.placeOrder(con, sell)
+        end = now_utc() + timedelta(seconds=timeout_s)
+        while (now_utc() < end) and (getattr(t_sell.orderStatus, "filled", 0) < qty):
+            ib.sleep(0.3)
+
+        if getattr(t_sell.orderStatus, "filled", 0) < qty:
+            return False, "מכירה לא מולאה בזמן שהוגדר."
+
+        avg_buy = getattr(t_buy.orderStatus, "avgFillPrice", None)
+        avg_sell = getattr(t_sell.orderStatus, "avgFillPrice", None)
+        return True, f"הושלם Round-Trip: קניה {qty} @ {avg_buy}, מכירה {qty} @ {avg_sell}"
+    except Exception as e:
+        return False, f"שגיאה: {e}"
+
+if test_tws_btn:
+    ok, msg = run_tws_round_trip(ib)
+    (st.sidebar.success if ok else st.sidebar.error)(msg)
+
 # ---------- HEADER METRICS ----------
 col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
 with col1:
-    st.success(f"מחובר ל־IB ✅  ({host}:{port}, clientId={client_id})") if ib.isConnected() else st.error("לא מחובר ל־IB ❌")
+    if ib.isConnected():
+        st.success(f"IB Ready (orders) ✅  ({host}:{port}, clientId={client_id})")
+    else:
+        st.error("IB לא מחובר ❌")
 
 trade_rows, open_orders, last_fill = [], 0, None
 enabled = bool(st.session_state.get("strategy_enabled", False))
 if ib.isConnected():
     try:
+        # orders/trades status only
         ib.reqOpenOrders(); _ = ib.openTrades(); _ = ib.fills()
         trade_rows = snapshot_trades(ib); open_orders = count_open_orders(ib); last_fill = last_fill_timestamp(trade_rows)
     except Exception as e:
@@ -296,43 +441,55 @@ with left:
     else:
         st.write("אין טריידים להצגה עדיין.")
 
-# right panel header
 with right:
     st.subheader("📡 ניטור חי")
     st.write(f"⏱️ עכשיו: **{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}**")
-    st.write("🔗 סטטוס חיבור: **Connected**" if ib.isConnected() else "🔴 סטטוס חיבור: **Disconnected**")
+    st.write("🔗 IB (Orders): **Connected**" if ib.isConnected() else "🔴 IB: **Disconnected**")
+    ds = st.session_state.get("data_source", "okami")
+    st.write(f"🛰️ Data Source: **{ds.upper()}**")
+    if ds == "okami":
+        st.caption("Rate limit (Std): ~60 קריאות/דקה. קצב הרענון בדשבורד צריך להיות ≥ 1 שנ׳.")
     st.markdown("---")
-    st.subheader("📐 ORB – מצב חיי")
+    st.subheader("📐 ORB – מצב חי")
 
 # ---------- STRATEGY TICK ----------
 orb_levels, last_price_val, reason_text, phase = None, None, None, None
 decision_status = None
+provider = {}
 
 if ib.isConnected() and enabled and ORB_ENTRYPOINT is not None:
     cfg = st.session_state["strategy_config"]
     symbol = cfg["symbol"]; qty = int(cfg.get("qty", 100))
     tp = float(cfg["tp_value"]); sl = float(cfg["stop_value"]); orb_min = int(cfg["orb_minutes"])
-    catchup = bool(cfg.get("catchup", True)); catchup_win = int(cfg.get("catchup_window", 30))
 
-    kwargs = dict(ib=ib, symbol=symbol, qty=qty, tp_pct=tp, sl_pct=sl,
-                  range_minutes=orb_min, buffer_pct=0.0, cache=st.session_state,
-                  enter_only_after_close=True, enter_on_late_breakout=catchup, late_window_minutes=catchup_win)
+    kwargs = dict(
+        ib=ib, symbol=symbol, qty=qty, tp_pct=tp, sl_pct=sl,
+        range_minutes=orb_min, buffer_pct=0.0, cache=st.session_state,
+    )
+
+    if st.session_state["data_source"] == "okami":
+        kwargs.update(data_source="okami",
+                      okami_token=st.session_state.get("okami_token", ""),
+                      hybrid_fill_with_ib=bool(hybrid),
+                      enter_on_late_breakout=True)
+    else:
+        kwargs.update(data_source="ib")
 
     try:
-        result = ORB_ENTRYPOINT(**kwargs)  # מחזיר dict עם phase/range/last/status/reason
+        result = ORB_ENTRYPOINT(**kwargs)
         st.session_state["last_strategy_tick"] = now_utc()
     except TypeError:
-        # אם המימוש שלך לא מכיר חלק מהפרמטרים – נוריד אותם
-        kwargs = {k: v for k, v in kwargs.items() if k in ("ib","symbol","qty","tp_pct","sl_pct","range_minutes","buffer_pct","cache")}
-        result = ORB_ENTRYPOINT(**kwargs)
+        # If the strategy impl doesn't accept some params – trim them
+        keep = ("ib","symbol","qty","tp_pct","sl_pct","range_minutes","buffer_pct","cache")
+        result = ORB_ENTRYPOINT(**{k: v for k, v in kwargs.items() if k in keep})
         st.session_state["last_strategy_tick"] = now_utc()
     except Exception as e:
         result = {"status": "error", "error": str(e)}
 
-    # ----- parse result -----
     if isinstance(result, dict):
         decision_status = result.get("status", "")
         phase = result.get("phase")
+        provider = result.get("provider", {})
         rng = result.get("range")
         if rng:
             orb_levels = {"high": rng.get("high"), "low": rng.get("low"),
@@ -341,15 +498,18 @@ if ib.isConnected() and enabled and ORB_ENTRYPOINT is not None:
         last_price_val = result.get("last")
         reason_text = result.get("reason")
 
-        # notify on entries
-        if st.session_state.get("tg_enabled", False) and decision_status in ("entered_long","entered_short","entered_long_late","entered_short_late"):
-            side = "Long" if "long" in decision_status else "Short"
-            msg = f"✅ ORB Entry {side}\nSymbol: {symbol}\nLast: {last_price_val}\nH/L: {orb_levels.get('high')} / {orb_levels.get('low')}\nTP {tp}% | SL {sl}%"
-            send_telegram(st.session_state["tg_token"], st.session_state["tg_chat"], msg)
-
 # ---------- ORB live panel (right) ----------
 with right:
-    # פרוגרס/טיימר
+    # Okami status
+    if st.session_state["data_source"] == "okami":
+        ok = provider.get("ok")
+        ts = provider.get("last_api_ts")
+        if ok:
+            st.success(f"Okami Status: OK  ·  last_ts={ts or '—'}")
+        else:
+            st.warning("Okami Status: לא התקבלה תשובה לאחרונה (ייבדק בטיק הבא).")
+
+    # Progress/timer
     if orb_levels:
         p = orb_levels.get("progress")
         rem = orb_levels.get("remaining_sec")
@@ -363,13 +523,13 @@ with right:
             except Exception:
                 pass
 
-    # מדדים
+    # Metrics
     c1, c2, c3 = st.columns(3)
     with c1: st.metric("ORB High", f"{(orb_levels or {}).get('high', '—')}")
     with c2: st.metric("Last Price", f"{last_price_val if last_price_val is not None else '—'}")
     with c3: st.metric("ORB Low", f"{(orb_levels or {}).get('low', '—')}")
 
-    # הסבר החלטה
+    # Reason
     if decision_status == "building_range":
         st.info(reason_text or "בונה טווח פתיחה…")
     elif decision_status in ("waiting_for_breakout", "already_in_position_or_open_orders"):
@@ -381,10 +541,9 @@ with right:
     elif decision_status:
         st.write(decision_status)
 
-    # גרף קצר
+    # Optional chart (IB historical only)
     try:
-        from orb_strategy import recent_bars_for_chart  # להשתמש בעזר שלנו
-        if _HAS_ALTAIR:
+        if _HAS_ALTAIR and ib.isConnected() and recent_bars_for_chart:
             bars = recent_bars_for_chart(ib, st.session_state["strategy_config"]["symbol"], minutes=45)
             if bars:
                 df = pd.DataFrame([{"t": b.date, "close": float(b.close)} for b in bars])
@@ -404,4 +563,4 @@ for r in (snapshot_trades(ib) if ib.isConnected() else [])[:20]:
     log_lines.append(line)
 st.code("\n".join(log_lines) if log_lines else "היומן ריק כרגע.", language="text")
 
-st.caption("© Live Bot Dashboard — ORB live builder, reasons, chart, Telegram alerts.")
+st.caption("© Live Bot Dashboard — Data by OkamiStocks (optional), Orders via IBKR. ORB live builder, reasons, Telegram alerts.  •  Round-trip test executes real orders if not on Paper account.")

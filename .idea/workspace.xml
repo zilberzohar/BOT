@@ -4,9 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ace79391-ebb8-42ea-be28-936c2622ef3f" name="Changes" comment="stratagi checks">
+    <list default="true" id="ace79391-ebb8-42ea-be28-936c2622ef3f" name="Changes" comment="יימר/התקדמות + הסבר החלטה + גרף)">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/BOT/5_Live_Bot_Dashboard.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/5_Live_Bot_Dashboard.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/BOT/orb_strategy.py" beforeDir="false" afterPath="$PROJECT_DIR$/BOT/orb_strategy.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -174,7 +175,15 @@
       <option name="project" value="LOCAL‎" />
       <updated>1758111346136</updated>
     </task>
-    <option name="localTasksCounter" value="9" />
+    <task id="LOCAL‎-00009" summary="יימר/התקדמות + הסבר החלטה + גרף)">
+      <option name="closed" value="true" />
+      <created>1758191619934</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL‎-00009" />
+      <option name="project" value="LOCAL‎" />
+      <updated>1758191619934</updated>
+    </task>
+    <option name="localTasksCounter" value="10" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
@@ -185,6 +194,7 @@
     <MESSAGE value="BUILD MONITOR _with CHAT GPT" />
     <MESSAGE value="AFTER GPT SESSION" />
     <MESSAGE value="stratagi checks" />
-    <option name="LAST_COMMIT_MESSAGE" value="stratagi checks" />
+    <MESSAGE value="יימר/התקדמות + הסבר החלטה + גרף)" />
+    <option name="LAST_COMMIT_MESSAGE" value="יימר/התקדמות + הסבר החלטה + גרף)" />
   </component>
 </project>
