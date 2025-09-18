@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 # 5_Live_Bot_Dashboard.py
 # ------------------------------------------------------------
-# Live Bot Dashboard with:
-# - Data-source switch (OkamiStocks | IB) for *data*
-# - IBKR for *orders only*
-# - ORB live build, progress, reasons, Telegram, trades log
-# - NEW: "בדיקת Okami" (price) + "בדיקת TWS" (round-trip 1 share VIXY)
+# Live Bot Dashboard:
+# - Data: OkamiStocks (API) | IB (optional)
+# - Orders: IBKR only
+# - ORB live, reasons, Telegram, log
+# - Tests: Okami (price), TWS Round-Trip on the selected Ticker
+# - Spinner fix + historical suppression during round-trip run
+# - Okami API Key auto-load (secrets/env/keyring) + optional inline edit
 # ------------------------------------------------------------
 
 import sys, asyncio, os, json, warnings
@@ -14,14 +16,13 @@ from typing import List, Dict, Any, Optional
 
 import streamlit as st
 
-# Hide pandas_ta deprecation noise if present
 warnings.filterwarnings(
     "ignore",
     message=r".*pkg_resources is deprecated.*",
     category=UserWarning
 )
 
-# ---- asyncio fix (Windows) ----
+# ---- asyncio (Windows) ----
 try:
     if sys.platform.startswith("win") and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -32,14 +33,13 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-# ---- optional autorefresh ----
+# ---- optional extras ----
 _HAS_AUTO = True
 try:
     from streamlit_autorefresh import st_autorefresh
 except Exception:
     _HAS_AUTO = False
 
-# ---- optional chart ----
 _HAS_ALTAIR = True
 try:
     import pandas as pd
@@ -47,7 +47,7 @@ try:
 except Exception:
     _HAS_ALTAIR = False
 
-# ---- ib_insync (for orders) ----
+# ---- ib_insync ----
 try:
     from ib_insync import IB, Stock, MarketOrder
     _HAS_IB = True
@@ -63,7 +63,31 @@ except Exception as e:
 
 from importlib import import_module
 
-# ---- load ORB entrypoint + Okami client helpers from orb_strategy (fallback safe) ----
+# ---- Okami token loader ----
+def get_okami_token_from_sources() -> str:
+    # order: session → secrets.toml → ENV → keyring
+    tok = st.session_state.get("okami_token")
+    if tok:
+        return tok
+    try:
+        sec = st.secrets.get("okami", {})
+        if isinstance(sec, dict) and sec.get("token"):
+            return sec["token"]
+    except Exception:
+        pass
+    env = os.getenv("OKAMI_API_KEY")
+    if env:
+        return env
+    try:
+        import keyring  # pip install keyring
+        val = keyring.get_password("okami", "token")
+        if val:
+            return val
+    except Exception:
+        pass
+    return ""
+
+# ---- load strategy helpers (from orb_strategy.py if exists) ----
 OkamiClient = None
 recent_bars_for_chart = None
 autodetect_contract = None
@@ -77,7 +101,6 @@ def load_orb_entrypoint():
             continue
         fn = getattr(mod, "run_orb_once", None)
         if callable(fn):
-            # optional helpers
             OkamiClient = getattr(mod, "OkamiClient", OkamiClient)
             recent_bars_for_chart = getattr(mod, "recent_bars_for_chart", recent_bars_for_chart)
             autodetect_contract = getattr(mod, "autodetect_contract", autodetect_contract)
@@ -86,19 +109,17 @@ def load_orb_entrypoint():
 
 ORB_ENTRYPOINT, ORB_SOURCE = load_orb_entrypoint()
 
-# ---- IB client cached ----
 @st.cache_resource(show_spinner=False)
 def get_ib_client():
     if not _HAS_IB:
         return None
     return IB()
 
-# ---- utils ----
 def now_utc(): return datetime.now(timezone.utc)
 def fmt_ts(ts: Optional[datetime]) -> str:
     return "—" if not ts else ts.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
-# ---- trades access (robust) ----
+# ---- IB trades helpers ----
 def _trades_list(ib) -> list:
     try:
         tr = getattr(ib, "trades", None)
@@ -150,7 +171,7 @@ def derive_bot_state(enabled: bool, open_orders: int, last_fill: Optional[dateti
     if enabled: return "Waiting for signal"
     return "Idle"
 
-# ---- telegram ----
+# ---- Telegram ----
 def send_telegram(bot_token: str, chat_id: str, text: str) -> bool:
     if not bot_token or not chat_id: return False
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -169,12 +190,14 @@ def send_telegram(bot_token: str, chat_id: str, text: str) -> bool:
     except Exception:
         return False
 
-# ---- page ----
+# ---- Session flags ----
+st.session_state.setdefault("suppress_hist_until_rerun", False)  # lock history/chart during round-trip run
+
+# ---- UI ----
 st.set_page_config(page_title="Live Bot Dashboard", layout="wide")
 st.title("📈 Live Bot Dashboard – מצב מסחר חי")
 if not _HAS_IB: st.stop()
 
-# ---------- SIDEBAR ----------
 with st.sidebar:
     st.header("🔌 חיבור וסטטוס")
     refresh_every = st.number_input("קצב רענון (שניות)", 1, 30, 2)
@@ -193,8 +216,11 @@ with st.sidebar:
     manual_refresh_btn = st.button("🔄 רענן עכשיו")
     st.caption("הדשבורד נמנע ממשיכת דאטה דרך IB כדי לא לנתק DATA באפליקציה.")
 
-    # NEW: TWS test button
-    test_tws_btn = st.button("🧪 בדיקת TWS (Round-Trip VIXY 1)")
+    # --- Round-Trip options ---
+    st.markdown("**TWS Round-Trip Test**")
+    paper_only = st.checkbox("Run only on Paper (port 7497)", value=True,
+                             help="הגנה בסיסית: אם תחובר ל־7496 (LIVE), הבדיקה לא תרוץ.")
+    test_tws_btn = st.button("🧪 בדיקת TWS (Round-Trip 1 יחידה)")
 
     st.divider()
     st.subheader("📡 Data Source")
@@ -207,12 +233,23 @@ with st.sidebar:
     )
     st.session_state["data_source"] = data_source
 
+    # Okami token auto-load + optional inline edit
     st.session_state.setdefault("okami_token", "")
-    okami_token = st.text_input("Okami API Key", value=st.session_state["okami_token"], type="password")
-    st.session_state["okami_token"] = okami_token
-    st.info("Okami endpoints: real-time & minute snapshot. ללא היסטוריית דקה מלאה.")
+    _loaded_okami = get_okami_token_from_sources()
+    if _loaded_okami:
+        okami_token = _loaded_okami
+        st.caption("🔑 Okami API Key נטען אוטומטית (secrets/env/keyring).")
+        if st.toggle("ערוך מפתח Okami", value=False):
+            okami_token = st.text_input("Okami API Key", value=okami_token, type="password")
+            st.session_state["okami_token"] = okami_token
+        else:
+            st.session_state["okami_token"] = okami_token
+    else:
+        okami_token = st.text_input("Okami API Key", value="", type="password",
+                                    help="שמור בקובץ .streamlit/secrets.toml או במשתנה סביבה OKAMI_API_KEY לטעינה אוטומטית.")
+        st.session_state["okami_token"] = okami_token
 
-    # NEW: Okami test button
+    st.info("Okami endpoints: real-time & minute snapshot. ללא היסטוריית דקה מלאה.")
     test_okami_btn = st.button("🧪 בדיקת Okami (שער נוכחי)")
 
     hybrid = st.toggle(
@@ -266,10 +303,15 @@ with st.sidebar:
 
     st.divider()
     st.subheader("🔔 Notifications")
-    st.session_state.setdefault("tg_enabled", False)
-    st.session_state.setdefault("tg_token", os.getenv("TELEGRAM_BOT_TOKEN", ""))
-    st.session_state.setdefault("tg_chat", os.getenv("TELEGRAM_CHAT_ID", ""))
-    tg_enabled = st.toggle("Enable Telegram alerts", value=st.session_state["tg_enabled"])
+    st.session_state.setdefault(
+        "tg_token",
+        (st.secrets.get("telegram", {}).get("bot_token") if "telegram" in st.secrets else os.getenv("TELEGRAM_BOT_TOKEN", ""))
+    )
+    st.session_state.setdefault(
+        "tg_chat",
+        (st.secrets.get("telegram", {}).get("chat_id") if "telegram" in st.secrets else os.getenv("TELEGRAM_CHAT_ID", ""))
+    )
+    tg_enabled = st.toggle("Enable Telegram alerts", value=st.session_state.get("tg_enabled", False))
     tg_token = st.text_input("Bot Token", value=st.session_state["tg_token"], type="password")
     tg_chat  = st.text_input("Chat ID",  value=st.session_state["tg_chat"])
     if st.button("שלח הודעת בדיקה"):
@@ -277,14 +319,15 @@ with st.sidebar:
         st.success("נשלח!") if ok else st.error("נכשל לשלוח (בדוק Token/Chat ID)")
     st.session_state["tg_enabled"] = tg_enabled; st.session_state["tg_token"] = tg_token; st.session_state["tg_chat"] = tg_chat
 
-# autorefresh
-if auto_refresh and _HAS_AUTO:
+# ---- autorefresh ----
+if 'auto_refresh' in locals() and auto_refresh and _HAS_AUTO:
     st_autorefresh(interval=int(refresh_every) * 1000, key="auto_refresh_key")
 
-# IB connect/disconnect (orders only)
+# ---- connect/disconnect ----
 ib = get_ib_client()
 if ib is None: st.error("❌ לא ניתן ליצור חיבור IB."); st.stop()
-if connect_btn:
+
+if 'connect_btn' in locals() and connect_btn:
     try:
         if not ib.isConnected():
             ib.connect(host, int(port), clientId=int(client_id), readonly=False, timeout=5)
@@ -294,21 +337,23 @@ if connect_btn:
             st.sidebar.error("נכשל להתחבר.")
     except Exception as e:
         st.sidebar.error(f"שגיאת חיבור: {e}")
-if disconnect_btn:
+
+if 'disconnect_btn' in locals() and disconnect_btn:
     try:
         if ib.isConnected(): ib.disconnect()
         st.sidebar.info("נותק.")
     except Exception as e:
         st.sidebar.error(f"שגיאת ניתוק: {e}")
-if manual_refresh_btn: st.rerun()
 
-# ---------- NEW: Okami test action ----------
+if 'manual_refresh_btn' in locals() and manual_refresh_btn:
+    st.rerun()
+
+# ---- Okami test ----
 def run_okami_test(symbol: str, token: str):
-    """
-    Fetch a live price from Okami and show in sidebar.
-    """
     try:
-        # Prefer using OkamiClient from orb_strategy if available
+        if not token:
+            st.sidebar.error("נא להזין Okami API Key.")
+            return
         if OkamiClient is not None:
             oc = OkamiClient(token)
             price = oc.realtime_mid(symbol)
@@ -318,87 +363,82 @@ def run_okami_test(symbol: str, token: str):
             if price is not None:
                 st.sidebar.success(f"Okami OK — {symbol} price: {price}")
             else:
-                st.sidebar.warning("Okami מחובר אבל לא הוחזר מחיר. בדוק API Key/סימול/הודעות מערכת.")
+                st.sidebar.warning("Okami מחובר אך לא הוחזר מחיר (בדוק סימול/הודעות מערכת).")
             return
-        # Fallback minimal request if class missing
-        try:
-            import requests  # type: ignore
-            r = requests.post(
-                "https://okamistocks.io/api/quote/real-time",
-                json={"token": token, "ticker": symbol},
-                timeout=5
-            )
-            if r.ok:
-                js = r.json()
-                bid, ask = js.get("bid_price"), js.get("ask_price")
-                price = None
-                if isinstance(bid, (int, float)) and isinstance(ask, (int, float)):
-                    price = (bid + ask) / 2.0
-                else:
-                    for fld in ("last", "minute_close_price", "bid_price", "ask_price"):
-                        v = js.get(fld)
-                        if isinstance(v, (int, float)): price = float(v); break
-                if price is not None:
-                    st.sidebar.success(f"Okami OK — {symbol} price: {price}")
-                else:
-                    st.sidebar.warning("Okami OK אך לא זוהה שדה מחיר.")
+        import requests  # type: ignore
+        r = requests.post(
+            "https://okamistocks.io/api/quote/real-time",
+            json={"token": token, "ticker": symbol},
+            timeout=5
+        )
+        if r.ok:
+            js = r.json()
+            price = None
+            bid, ask = js.get("bid_price"), js.get("ask_price")
+            if isinstance(bid, (int, float)) and isinstance(ask, (int, float)):
+                price = (bid + ask) / 2.0
             else:
-                st.sidebar.error(f"Okami כשל (HTTP {r.status_code})")
-        except Exception as e:
-            st.sidebar.error(f"שגיאת Okami: {e}")
+                for fld in ("last", "minute_close_price", "bid_price", "ask_price"):
+                    v = js.get(fld)
+                    if isinstance(v, (int, float)): price = float(v); break
+            st.sidebar.success(f"Okami OK — {symbol} price: {price}") if price is not None \
+                else st.sidebar.warning("Okami OK אך לא זוהה שדה מחיר.")
+        else:
+            st.sidebar.error(f"Okami כשל (HTTP {r.status_code})")
     except Exception as e:
         st.sidebar.error(f"שגיאת Okami: {e}")
 
-if test_okami_btn:
-    if not okami_token:
-        st.sidebar.error("נא להזין Okami API Key.")
-    else:
-        run_okami_test(ticker.strip().upper(), okami_token.strip())
+if 'test_okami_btn' in locals() and test_okami_btn:
+    run_okami_test(st.session_state["strategy_config"]["symbol"].strip().upper(), st.session_state.get("okami_token","").strip())
 
-# ---------- NEW: TWS round-trip test ----------
-def run_tws_round_trip(ib: IB, symbol: str = "VIXY", qty: int = 1, timeout_s: int = 30):
-    """
-    Market BUY qty, wait fill, then Market SELL qty. Returns (ok, details).
-    """
+# ---- TWS round-trip (on selected ticker) ----
+def build_stock_contract(symbol: str):
+    # Force SMART to avoid getting stuck on BATS
+    sym = symbol.strip().upper()
+    try:
+        if autodetect_contract:
+            c = autodetect_contract(ib, sym)
+            return Stock(sym, "SMART", getattr(c, "currency", "USD") or "USD")
+    except Exception:
+        pass
+    return Stock(sym, "SMART", "USD")
+
+def run_tws_round_trip(ib: IB, symbol: str, qty: int = 1, timeout_s: int = 30) -> (bool, str):
     try:
         if not ib.isConnected():
             return False, "IB לא מחובר."
-        # Build contract (fallback simple)
-        if autodetect_contract:
-            con = autodetect_contract(ib, symbol)
-        else:
-            con = Stock(symbol, "SMART", "USD")
-
+        con = build_stock_contract(symbol)
         buy = MarketOrder("BUY", qty)
         t_buy = ib.placeOrder(con, buy)
-        # wait fill
         end = now_utc() + timedelta(seconds=timeout_s)
         while (now_utc() < end) and (getattr(t_buy.orderStatus, "filled", 0) < qty):
-            ib.sleep(0.3)
-
+            ib.sleep(0.25)
         if getattr(t_buy.orderStatus, "filled", 0) < qty:
             return False, "קניה לא מולאה בזמן שהוגדר."
-
         sell = MarketOrder("SELL", qty)
         t_sell = ib.placeOrder(con, sell)
         end = now_utc() + timedelta(seconds=timeout_s)
         while (now_utc() < end) and (getattr(t_sell.orderStatus, "filled", 0) < qty):
-            ib.sleep(0.3)
-
+            ib.sleep(0.25)
         if getattr(t_sell.orderStatus, "filled", 0) < qty:
             return False, "מכירה לא מולאה בזמן שהוגדר."
-
         avg_buy = getattr(t_buy.orderStatus, "avgFillPrice", None)
         avg_sell = getattr(t_sell.orderStatus, "avgFillPrice", None)
-        return True, f"הושלם Round-Trip: קניה {qty} @ {avg_buy}, מכירה {qty} @ {avg_sell}"
+        return True, f"הושלם Round-Trip על {symbol}: קניה {qty} @ {avg_buy}, מכירה {qty} @ {avg_sell}"
     except Exception as e:
         return False, f"שגיאה: {e}"
 
-if test_tws_btn:
-    ok, msg = run_tws_round_trip(ib)
-    (st.sidebar.success if ok else st.sidebar.error)(msg)
+if 'test_tws_btn' in locals() and test_tws_btn:
+    if paper_only and int(port) != 7497:
+        st.sidebar.error("הבדיקה נעצרת: 'Paper only' מסומן אך החיבור אינו ל-7497.")
+    else:
+        st.session_state["suppress_hist_until_rerun"] = True  # lock history/chart this run
+        with st.spinner(f"מבצע Round-Trip של 1 יחידה ב־{st.session_state['strategy_config']['symbol'].strip().upper()}..."):
+            ok, msg = run_tws_round_trip(ib, st.session_state["strategy_config"]["symbol"].strip().upper(), qty=1)
+        (st.sidebar.success if ok else st.sidebar.error)(msg)
+        st.session_state["last_tws_result"] = (ok, msg, now_utc())
 
-# ---------- HEADER METRICS ----------
+# ---------- HEADER ----------
 col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
 with col1:
     if ib.isConnected():
@@ -410,7 +450,6 @@ trade_rows, open_orders, last_fill = [], 0, None
 enabled = bool(st.session_state.get("strategy_enabled", False))
 if ib.isConnected():
     try:
-        # orders/trades status only
         ib.reqOpenOrders(); _ = ib.openTrades(); _ = ib.fills()
         trade_rows = snapshot_trades(ib); open_orders = count_open_orders(ib); last_fill = last_fill_timestamp(trade_rows)
     except Exception as e:
@@ -421,16 +460,15 @@ with col2: st.metric("סטטוס בוט", state)
 with col3: st.metric("הזמנות פתוחות", open_orders)
 with col4: st.metric("מילוי אחרון", fmt_ts(last_fill))
 
-if "last_strategy_tick" not in st.session_state: st.session_state["last_strategy_tick"] = None
-col5, col6 = st.columns([1, 1])
-with col5: st.metric("Strategy", "ON" if enabled else "OFF")
-with col6: st.metric("Last Strategy Tick", fmt_ts(st.session_state.get("last_strategy_tick")))
+if "last_tws_result" in st.session_state:
+    ok, msg, t = st.session_state["last_tws_result"]
+    (st.success if ok else st.error)(f"{fmt_ts(t)} · {msg}")
+
 st.divider()
 
 # ---------- BODY ----------
 left, right = st.columns([3, 2])
 
-# ---- Trades table ----
 with left:
     st.subheader("🧾 עסקאות אחרונות (IB Trades)")
     if trade_rows:
@@ -448,7 +486,7 @@ with right:
     ds = st.session_state.get("data_source", "okami")
     st.write(f"🛰️ Data Source: **{ds.upper()}**")
     if ds == "okami":
-        st.caption("Rate limit (Std): ~60 קריאות/דקה. קצב הרענון בדשבורד צריך להיות ≥ 1 שנ׳.")
+        st.caption("Rate limit (Std): ~60 קריאות/דקה. קצב הרענון ≥ 1 שנ׳.")
     st.markdown("---")
     st.subheader("📐 ORB – מצב חי")
 
@@ -457,7 +495,9 @@ orb_levels, last_price_val, reason_text, phase = None, None, None, None
 decision_status = None
 provider = {}
 
-if ib.isConnected() and enabled and ORB_ENTRYPOINT is not None:
+SUPPRESS_THIS_RUN = bool(st.session_state.get("suppress_hist_until_rerun"))
+
+if (not SUPPRESS_THIS_RUN) and ib.isConnected() and enabled and ORB_ENTRYPOINT is not None:
     cfg = st.session_state["strategy_config"]
     symbol = cfg["symbol"]; qty = int(cfg.get("qty", 100))
     tp = float(cfg["tp_value"]); sl = float(cfg["stop_value"]); orb_min = int(cfg["orb_minutes"])
@@ -466,7 +506,6 @@ if ib.isConnected() and enabled and ORB_ENTRYPOINT is not None:
         ib=ib, symbol=symbol, qty=qty, tp_pct=tp, sl_pct=sl,
         range_minutes=orb_min, buffer_pct=0.0, cache=st.session_state,
     )
-
     if st.session_state["data_source"] == "okami":
         kwargs.update(data_source="okami",
                       okami_token=st.session_state.get("okami_token", ""),
@@ -479,12 +518,11 @@ if ib.isConnected() and enabled and ORB_ENTRYPOINT is not None:
         result = ORB_ENTRYPOINT(**kwargs)
         st.session_state["last_strategy_tick"] = now_utc()
     except TypeError:
-        # If the strategy impl doesn't accept some params – trim them
         keep = ("ib","symbol","qty","tp_pct","sl_pct","range_minutes","buffer_pct","cache")
         result = ORB_ENTRYPOINT(**{k: v for k, v in kwargs.items() if k in keep})
         st.session_state["last_strategy_tick"] = now_utc()
     except Exception as e:
-        result = {"status": "error", "error": str(e)}
+        result = {"status": "error", "reason": str(e)}
 
     if isinstance(result, dict):
         decision_status = result.get("status", "")
@@ -498,9 +536,7 @@ if ib.isConnected() and enabled and ORB_ENTRYPOINT is not None:
         last_price_val = result.get("last")
         reason_text = result.get("reason")
 
-# ---------- ORB live panel (right) ----------
 with right:
-    # Okami status
     if st.session_state["data_source"] == "okami":
         ok = provider.get("ok")
         ts = provider.get("last_api_ts")
@@ -509,7 +545,6 @@ with right:
         else:
             st.warning("Okami Status: לא התקבלה תשובה לאחרונה (ייבדק בטיק הבא).")
 
-    # Progress/timer
     if orb_levels:
         p = orb_levels.get("progress")
         rem = orb_levels.get("remaining_sec")
@@ -519,17 +554,15 @@ with right:
         else:
             st.info(f"⏳ בונה טווח ORB — נותר {rem if rem is not None else '?'} שנ׳")
             try:
-                st.progress(min(1.0, max(0.0, float(p))))  # 0..1
+                st.progress(min(1.0, max(0.0, float(p))))
             except Exception:
                 pass
 
-    # Metrics
     c1, c2, c3 = st.columns(3)
     with c1: st.metric("ORB High", f"{(orb_levels or {}).get('high', '—')}")
     with c2: st.metric("Last Price", f"{last_price_val if last_price_val is not None else '—'}")
     with c3: st.metric("ORB Low", f"{(orb_levels or {}).get('low', '—')}")
 
-    # Reason
     if decision_status == "building_range":
         st.info(reason_text or "בונה טווח פתיחה…")
     elif decision_status in ("waiting_for_breakout", "already_in_position_or_open_orders"):
@@ -541,9 +574,9 @@ with right:
     elif decision_status:
         st.write(decision_status)
 
-    # Optional chart (IB historical only)
+    # Chart (disabled when SUPPRESS_THIS_RUN)
     try:
-        if _HAS_ALTAIR and ib.isConnected() and recent_bars_for_chart:
+        if _HAS_ALTAIR and ib.isConnected() and recent_bars_for_chart and (not SUPPRESS_THIS_RUN):
             bars = recent_bars_for_chart(ib, st.session_state["strategy_config"]["symbol"], minutes=45)
             if bars:
                 df = pd.DataFrame([{"t": b.date, "close": float(b.close)} for b in bars])
@@ -554,7 +587,7 @@ with right:
 
 st.divider()
 
-# ---------- LOG ----------
+# ---- LOG ----
 st.subheader("🪵 יומן אירועים")
 log_lines = []
 for r in (snapshot_trades(ib) if ib.isConnected() else [])[:20]:
@@ -563,4 +596,8 @@ for r in (snapshot_trades(ib) if ib.isConnected() else [])[:20]:
     log_lines.append(line)
 st.code("\n".join(log_lines) if log_lines else "היומן ריק כרגע.", language="text")
 
-st.caption("© Live Bot Dashboard — Data by OkamiStocks (optional), Orders via IBKR. ORB live builder, reasons, Telegram alerts.  •  Round-trip test executes real orders if not on Paper account.")
+st.caption("© Live Bot Dashboard — Data by OkamiStocks (optional), Orders via IBKR. ORB live builder, reasons, Telegram alerts. • Round-trip uses selected Ticker and is blocked on LIVE if 'Paper only' checked.")
+
+# reset suppression flag after this run so next refresh returns to normal
+if st.session_state.get("suppress_hist_until_rerun"):
+    st.session_state["suppress_hist_until_rerun"] = False
